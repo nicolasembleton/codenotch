@@ -31,6 +31,61 @@ struct ReleaseNote: Equatable {
 enum ReleaseNotes {
     static let all: [ReleaseNote] = [
         ReleaseNote(
+            version: "1.5.0",
+            headline: "Two more providers, and a live account plan that was silently dropped.",
+            changes: [
+                ReleaseNote.Change(
+                    title: "Grok is a new ring",
+                    detail: "SuperGrok's weekly Grok Build allowance, read from "
+                          + "the same billing endpoint the CLI uses, with the "
+                          + "session in ~/.grok/auth.json."
+                ),
+                ReleaseNote.Change(
+                    title: "OpenCode's Go plan is a new ring",
+                    detail: "Reads the Go plan's official usage endpoint with "
+                          + "the key OpenCode itself stores on sign-in — no "
+                          + "second sign-in."
+                ),
+                ReleaseNote.Change(
+                    title: "A real Codex account went unmetered",
+                    detail: "Codex's live reading only recognised a 5-hour and "
+                          + "a 7-day window. A free-plan account's real limit "
+                          + "was a 30-day one, which fell through unnoticed and "
+                          + "showed as nothing metered on an account that was "
+                          + "genuinely tracked."
+                ),
+                ReleaseNote.Change(
+                    title: "Switching a provider off now really stops it",
+                    detail: "Opening Settings could still read a switched-off "
+                          + "provider's account, and a reply already in flight "
+                          + "could restore a reading you had just asked it to "
+                          + "forget."
+                ),
+                ReleaseNote.Change(
+                    title: "Contributors can build without a certificate",
+                    detail: "make build and make test now sign themselves "
+                          + "automatically when the maintainer's Developer ID "
+                          + "isn't present — no Apple account needed to work "
+                          + "on this."
+                )
+            ]
+        ),
+        ReleaseNote(
+            version: "1.4.1",
+            headline: "Waking from sleep no longer erases a reading.",
+            changes: [
+                ReleaseNote.Change(
+                    title: "A ring survives waking your Mac",
+                    detail: "A brief window right after sleep, where macOS "
+                          + "won't allow a keychain prompt yet, was mistaken "
+                          + "for being signed out — which erased the reading "
+                          + "and left \"waiting for the first reading\" on "
+                          + "screen. It now ages the number instead of "
+                          + "throwing it away, and picks back up on its own."
+                )
+            ]
+        ),
+        ReleaseNote(
             version: "1.4.0",
             headline: "Two more accounts, four community fixes, and honest duplicates.",
             changes: [

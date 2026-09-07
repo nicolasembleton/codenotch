@@ -819,6 +819,41 @@ final class KeychainRefusalTests: XCTestCase {
         XCTAssertFalse(ClaudeCredentials.wasRefused(errSecItemNotFound))
     }
 
+    /// The reported case: a Mac just woken from a long sleep answers -25320,
+    /// "in dark wake, no UI possible" — a read the account had nothing to do
+    /// with. This is not a refusal (nothing was denied) and not "signed out"
+    /// either, so it must land in neither bucket.
+    func testADarkWakeIsNeitherARefusalNorSignedOut() {
+        let darkWake: OSStatus = -25320
+        XCTAssertTrue(ClaudeCredentials.wasTransient(darkWake))
+        XCTAssertFalse(ClaudeCredentials.wasRefused(darkWake),
+                       "a transient status was also claimed as a refusal")
+    }
+
+    /// The three real refusals, and "not found", must never be swept into the
+    /// transient bucket — that would let a genuine refusal or sign-out through
+    /// with the archive wrongly preserved.
+    func testOnlyTheDarkWakeStatusIsTransient() {
+        for status in [errSecAuthFailed, errSecUserCanceled,
+                       errSecInteractionNotAllowed, errSecItemNotFound] {
+            XCTAssertFalse(ClaudeCredentials.wasTransient(status))
+        }
+    }
+
+    /// The end-to-end reason this matters: a dark-wake failure must not wipe
+    /// the archive the way a real sign-out does. `.credentialExpired` already
+    /// ages a reading rather than discarding it — reusing it for this case is
+    /// what makes a dark-wake blip say "dated" instead of "waiting for the
+    /// first reading" with the number gone.
+    func testTheTransientStatusPreservesHistoryEndToEnd() {
+        let status = UsageStore.statusForTesting(UsageProviderError.credentialExpired)
+        XCTAssertFalse(UsageStore.supersedesHistory(status),
+                       "a dark-wake blip would wipe the archive like a real sign-out")
+        guard case .stale = status else {
+            return XCTFail("expected a dated reading, got \(status)")
+        }
+    }
+
     func testTheStatusSaysWhatHappenedAndWhatToDo() {
         let snapshot = ProviderSnapshot(
             id: "claude", displayName: "Claude", glyph: .claude,

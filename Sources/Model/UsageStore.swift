@@ -14,13 +14,20 @@ final class UsageStore: ObservableObject {
     @Published private(set) var refusedAccess: Set<String> = []
 
     private let providers: [UsageProvider]
+    /// A response belongs to the connection that started it. Checking only
+    /// `disconnected` would accept an old response after a quick off/on toggle.
+    private var connectionVersions: [String: UUID] = [:]
     /// Providers the user has switched off. They are not fetched at all — their
     /// credential is never read, which is the whole point of switching one off.
     /// Filtering the results afterwards would still touch the keychain.
     @Published var disconnected: Set<String> = [] {
         didSet {
             guard disconnected != oldValue else { return }
+            for id in disconnected.symmetricDifference(oldValue) {
+                connectionVersions[id] = UUID()
+            }
             snapshots.removeAll { disconnected.contains($0.id) }
+            refusedAccess.subtract(disconnected)
             // The remembered reading has to go as well. Dropping it from
             // `snapshots` alone left it in `lastGood`, which is written to the
             // archive wholesale on every fetch — so a switched-off provider was
@@ -108,7 +115,8 @@ final class UsageStore: ObservableObject {
     var providerSummaries: [ProviderSummary] {
         providers.map { provider in
             ProviderSummary(id: provider.id, name: provider.displayName,
-                            glyph: provider.glyph, account: provider.account(),
+                            glyph: provider.glyph,
+                            account: disconnected.contains(provider.id) ? nil : provider.account(),
                             signIn: provider.signInRoute,
                             wasRefusedAccess: refusedAccess.contains(provider.id))
         }
@@ -179,13 +187,18 @@ final class UsageStore: ObservableObject {
 
     func refresh() async {
         let live = providers.filter { !disconnected.contains($0.id) }
+        let versions = connectionVersions
         refreshing = Set(live.map(\.id))
         defer { refreshing = [] }
         var next: [ProviderSnapshot] = []
         for provider in live {
-            next.append(await snapshot(from: provider))
+            if let fresh = await snapshot(from: provider, version: versions[provider.id]) {
+                next.append(fresh)
+            }
         }
-        snapshots = next
+        // An earlier result can have been disconnected while a later provider
+        // was awaiting its response. Do not put that reading back on screen.
+        snapshots = next.filter { isCurrent($0.id, version: versions[$0.id]) }
     }
 
     /// Refetch one provider, leaving the others alone.
@@ -199,9 +212,11 @@ final class UsageStore: ObservableObject {
               !refreshing.contains(providerID) else { return }
 
         refreshing.insert(providerID)
+        let version = connectionVersions[providerID]
         Task { [weak self] in
-            let fresh = await self?.snapshot(from: provider)
-            guard let self, let fresh else { return }
+            guard let self else { return }
+            defer { self.refreshing.remove(providerID) }
+            guard let fresh = await self.snapshot(from: provider, version: version) else { return }
             if let index = self.snapshots.firstIndex(where: { $0.id == providerID }) {
                 self.snapshots[index] = fresh
             }
@@ -209,7 +224,6 @@ final class UsageStore: ObservableObject {
             // A beat of visible work even when the answer was instant: a spinner
             // that flashes for one frame reads as a glitch, not as a refresh.
             try? await Task.sleep(nanoseconds: 380_000_000)
-            self.refreshing.remove(providerID)
         }
     }
 
@@ -228,6 +242,10 @@ final class UsageStore: ObservableObject {
     func signOut(providerID: String) {
         guard let provider = providers.first(where: { $0.id == providerID }) else { return }
 
+        // The settings binding calls signOut before delivering disconnected.
+        // Invalidate pending responses immediately, before that binding arrives.
+        connectionVersions[providerID] = UUID()
+        refusedAccess.remove(providerID)
         snapshots.removeAll { $0.id == providerID }
         lastGood.removeValue(forKey: providerID)
         archive.forget(providerID)
@@ -297,15 +315,25 @@ final class UsageStore: ObservableObject {
         }
     }
 
-    private func snapshot(from provider: UsageProvider) async -> ProviderSnapshot {
+    private func isCurrent(_ providerID: String, version: UUID?) -> Bool {
+        !Task.isCancelled && !disconnected.contains(providerID)
+            && connectionVersions[providerID] == version
+    }
+
+    private func snapshot(from provider: UsageProvider, version: UUID?) async -> ProviderSnapshot? {
+        // A provider may have been switched off while waiting behind another
+        // provider in the serial refresh. Do not read its credential at all.
+        guard isCurrent(provider.id, version: version) else { return nil }
         do {
             let fresh = try await provider.fetchSnapshot()
+            guard isCurrent(provider.id, version: version) else { return nil }
             lastGood[provider.id] = (fresh, Date())
             archive.save(lastGood)
             refusedAccess.remove(provider.id)
             Log.usage.debug("\(provider.id, privacy: .public): \(fresh.windows.count) window(s)")
             return fresh
         } catch {
+            guard isCurrent(provider.id, version: version) else { return nil }
             Log.usage.error("\(provider.id, privacy: .public) failed: \(String(describing: error), privacy: .public)")
             return degraded(provider: provider, error: error)
         }

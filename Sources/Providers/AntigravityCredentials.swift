@@ -46,6 +46,10 @@ struct AntigravityCredentials {
 
         guard status == errSecSuccess, let data = item as? Data else {
             Log.usage.error("antigravity keychain read failed: OSStatus \(status)")
+            // See `ClaudeCredentials.wasTransient` — a machine just woken
+            // from sleep answers this for a read the account had nothing to
+            // do with, and it must not be treated as a sign-out.
+            if ClaudeCredentials.wasTransient(status) { throw UsageProviderError.credentialExpired }
             throw ClaudeCredentials.wasRefused(status)
                 ? UsageProviderError.accessDenied
                 : UsageProviderError.needsAuth

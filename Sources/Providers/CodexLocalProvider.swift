@@ -1,118 +1,87 @@
 import Foundation
 import SQLite3
-import os
 
-/// Reads Codex usage from the rollout log of the thread it last worked on.
-///
-/// No credential and no network: Codex records its own rate-limit snapshots
-/// locally, the same bargain as reading Claude Code's session files. The newest
-/// rollout is found through Codex's thread index rather than by walking the
-/// sessions tree, which holds thousands of files.
+/// Reads live account limits using the session owned and refreshed by Codex.
 actor CodexLocalProvider: UsageProvider {
     nonisolated let id = "codex"
     nonisolated let displayName = "Codex"
     nonisolated let glyph = ProviderGlyph.openai
 
-    private let stateStore: URL
-    /// Only the tail matters — the newest snapshot is at the end of the file.
-    private let tailBytes = 256 * 1024
+    private let session: URLSession
+    nonisolated private let authURL: URL
+    private let archive: UsageArchive
+    private var retryNoEarlierThan: Date?
 
-    init(stateStore: URL = CodexStore.stateURL) {
-        self.stateStore = stateStore
+    init(session: URLSession = .shared,
+         authURL: URL = CodexCredentials.authURL,
+         archive: UsageArchive = UsageArchive()) {
+        self.session = session
+        self.authURL = authURL
+        self.archive = archive
+        // Recreating the provider or relaunching must not bypass the server's retry deadline.
+        self.retryNoEarlierThan = archive.loadBackoffUntil(providerID: "codex")
     }
 
     nonisolated var signInRoute: SignInRoute { .openApp(bundleID: "com.openai.codex", name: "Codex") }
 
-    nonisolated func account() -> ProviderAccount? { CodexCredentials.account() }
+    nonisolated func account() -> ProviderAccount? { CodexCredentials.account(from: authURL) }
 
     func fetchSnapshot() async throws -> ProviderSnapshot {
-        // Codex itself first. The rollout below is a record of what was true
-        // during the last turn; this is what is true now, and the two disagree
-        // by however long it has been since Codex was used.
-        if let live = await liveReading(), !live.windows.isEmpty {
-            return ProviderSnapshot(
-                id: id, displayName: displayName, glyph: glyph,
-                fidelity: .official, status: .ok, windows: live.windows,
-                headlineID: "primary", block: live.block
-            )
+        let now = Date()
+        if let retryNoEarlierThan, retryNoEarlierThan > now {
+            throw UsageProviderError.rateLimited(retryAfter: retryNoEarlierThan.timeIntervalSince(now))
         }
 
-        guard let rollout = CodexStore.newestRollout(in: stateStore) else {
-            throw UsageProviderError.nothingMetered("No Codex threads on this machine yet")
-        }
-        let text = try tail(of: rollout)
-        let windows = try CodexUsage.windows(fromRollout: text)
+        // Codex can rotate its token between polls; this app never refreshes or writes it.
+        let credential = try CodexCredentials.load(from: authURL)
+        var request = URLRequest(
+            url: URL(string: "https://chatgpt.com/backend-api/wham/usage")!,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: 15
+        )
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(credential.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(credential.accountID, forHTTPHeaderField: "ChatGPT-Account-Id")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("no-cache, no-store", forHTTPHeaderField: "Cache-Control")
 
+        let (data, response) = try await session.data(for: request)
+        let http = response as? HTTPURLResponse
+        let status = http?.statusCode ?? 0
+        if status == 401 || status == 403 { throw UsageProviderError.needsAuth }
+        if status == 429 {
+            let receivedAt = Date()
+            let delay = max(60, Self.retryAfter(from: http, now: receivedAt) ?? 0)
+            retryNoEarlierThan = receivedAt.addingTimeInterval(delay)
+            archive.saveBackoffUntil(retryNoEarlierThan, providerID: id)
+            throw UsageProviderError.rateLimited(retryAfter: delay)
+        }
+        guard (200..<300).contains(status) else {
+            throw UsageProviderError.badResponse(status: status)
+        }
+
+        let windows = try CodexUsage.windows(from: data)
+        retryNoEarlierThan = nil
+        archive.saveBackoffUntil(nil, providerID: id)
         return ProviderSnapshot(
-            id: id,
-            displayName: displayName,
-            glyph: glyph,
-            fidelity: .official,
-            status: Self.status(recordedAt: CodexUsage.recordedAt(inRollout: text)),
-            windows: windows,
-            headlineID: "primary"
+            id: id, displayName: displayName, glyph: glyph,
+            fidelity: .official, status: .ok, windows: windows,
+            headlineID: windows.first?.id
         )
     }
 
-    /// Ask Codex's app server for the live figure.
-    ///
-    /// Off the actor: spawning a process and waiting on a pipe is blocking
-    /// work, and doing it here would stall every other read this provider owes.
-    /// Nil rather than throwing when Codex is not installed or does not answer
-    /// — that is the ordinary case for someone who does not use it, and the
-    /// caller has an honest fallback either way.
-    private func liveReading() async -> (windows: [LimitWindow], block: UsageBlock?)? {
-        guard let executable = CodexBridge.executable() else { return nil }
-        let answer = await Task.detached(priority: .utility) { () -> Data? in
-            do {
-                return try CodexBridge.rateLimits(executable: executable)
-            } catch {
-                Log.usage.error("codex: app server failed: \(String(describing: error), privacy: .public)")
-                return nil
-            }
-        }.value
-        guard let answer else { return nil }
-        let windows = CodexBridge.windows(in: answer)
-        if windows.isEmpty {
-            Log.usage.error("codex: app server answered with no windows we understood")
-            return nil
-        }
-        let block = CodexBridge.block(in: answer)
-        Log.usage.debug("codex: live reading, \(windows.count) window(s), blocked: \(block != nil)")
-        return (windows, block)
-    }
+    private static func retryAfter(from response: HTTPURLResponse?, now: Date) -> TimeInterval? {
+        guard let header = response?.value(forHTTPHeaderField: "Retry-After")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        else { return nil }
+        if let seconds = TimeInterval(header), seconds.isFinite { return max(0, seconds) }
 
-    /// How long a rollout's own snapshot counts as current.
-    ///
-    /// Codex does not publish usage; it writes what it saw into a file as it
-    /// runs. So the file stops changing the moment you stop using Codex, and
-    /// reading it still succeeds instantly — the *fetch* is fresh while the
-    /// *reading* may be days old. Every other provider here asks a server and
-    /// gets today's answer, which is why only this one needs the distinction.
-    static let currentFor: TimeInterval = 5 * 60
-
-    static func status(recordedAt: Date?, now: Date = Date()) -> ProviderStatus {
-        // No timestamp to judge by: say stale rather than claim currency we
-        // cannot support.
-        guard let recordedAt else { return .stale(since: .distantPast) }
-        return now.timeIntervalSince(recordedAt) <= currentFor
-            ? .ok
-            : .stale(since: recordedAt)
-    }
-
-    /// Reads the last chunk of a file rather than all of it: rollouts grow
-    /// without bound and only the most recent snapshot is wanted.
-    private func tail(of url: URL) throws -> String {
-        guard let handle = try? FileHandle(forReadingFrom: url) else {
-            throw UsageProviderError.nothingMetered("Codex's rollout could not be read")
-        }
-        defer { try? handle.close() }
-
-        let size = (try? handle.seekToEnd()) ?? 0
-        let offset = size > UInt64(tailBytes) ? size - UInt64(tailBytes) : 0
-        try? handle.seek(toOffset: offset)
-        let data = (try? handle.readToEnd()) ?? Data()
-        return String(decoding: data, as: UTF8.self)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        guard let date = formatter.date(from: header) else { return nil }
+        return max(0, date.timeIntervalSince(now))
     }
 }
 

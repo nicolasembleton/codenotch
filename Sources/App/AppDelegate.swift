@@ -70,7 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let store = UsageStore(
                 providers: claudeProfiles.map { ClaudeOAuthProvider(profile: $0) }
                     + [CursorLocalProvider(), CodexLocalProvider(), AntigravityProvider(),
-                       GLMProvider()]
+                       GLMProvider(), GrokLocalProvider(), OpenCodeProvider()]
                     + webProviders,
                 disconnected: preferences.disconnectedProviders
             )
@@ -188,7 +188,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var monitors: [String: any AgentActivityMonitor] = [
             "cursor": CursorActivityMonitor(),
             "codex": CodexActivityMonitor(),
-            "gemini": AntigravityActivityMonitor()
+            "gemini": AntigravityActivityMonitor(),
+            "grok": GrokActivityMonitor()
         ]
         for profile in claudeProfiles {
             monitors[profile.id] = ClaudeSessionMonitor(directory: profile.sessionsDirectory)

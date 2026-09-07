@@ -191,6 +191,7 @@ final class UsageArchiveTests: XCTestCase {
     func testEmptyArchiveIsNotAnError() {
         XCTAssertTrue(UsageArchive(defaults: makeDefaults()).load().isEmpty)
     }
+
 }
 
 /// `Retry-After: 0` is the endpoint's actual answer, and obeying it literally is

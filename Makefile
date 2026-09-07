@@ -1,41 +1,42 @@
+# Only if the caller hasn't already chosen a toolchain (`$DEVELOPER_DIR`, or
+# `sudo xcode-select -s`) and the standard path actually exists — exporting a
+# path that isn't there breaks every target with `xcrun: missing DEVELOPER_DIR`
+# on a machine that only has the Command Line Tools installed.
+ifeq (,$(DEVELOPER_DIR))
+ifneq (,$(wildcard /Applications/Xcode.app/Contents/Developer))
 export DEVELOPER_DIR := /Applications/Xcode.app/Contents/Developer
+endif
+endif
 
 PROJECT := Codenotch.xcodeproj
 SCHEME  := Codenotch
 DEST    := platform=macOS,arch=arm64
 
-# Ad-hoc signing overrides, for a machine without the Developer ID cert. The
-# app's keychain ACL keys on the signing identity, so an ad-hoc build is asked
-# for the OAuth token again after every rebuild — but it runs, and the notch
-# works, without notarization or a paid certificate.
-ADHOC_SIGN = CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+# Debug ad-hoc signs itself when the maintainer's Developer ID certificate
+# isn't in the keychain, which is every machine but the maintainer's — so a
+# contributor can `make build`/`make test`/`make run` with no Apple account at
+# all, per CONTRIBUTING.md. On the maintainer's own machine this is empty and
+# changes nothing: project.yml's stable identity is what keeps a keychain
+# "Always Allow" grant alive across rebuilds, and forcing ad-hoc there would
+# throw that away and bring the prompt back on every `make run`.
+ifeq (0,$(shell security find-identity -v -p codesigning 2>/dev/null | grep -c "Developer ID Application"))
+DEV_SIGN := CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="" CODE_SIGN_STYLE=Automatic
+endif
 
-.PHONY: gen build test run run-nick nick clean
+.PHONY: gen build test run nick clean
 
 gen:
 	xcodegen generate
 
 build: gen
 	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
-		-configuration Debug build
+		-configuration Debug $(DEV_SIGN) build
 
 test: gen
 	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
-		-configuration Debug test
+		-configuration Debug $(DEV_SIGN) test
 
 run: build
-	@APP=$$(xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
-		-configuration Debug -showBuildSettings 2>/dev/null \
-		| awk -F' = ' '/ BUILT_PRODUCTS_DIR/ {print $$2; exit}')/Codenotch.app; \
-	pkill -x Codenotch || true; \
-	open "$$APP"
-
-# Build and launch without the Developer ID cert — ad-hoc signed, Debug config.
-# Same as `run` but with the signing overrides inlined, so the build doesn't
-# fail on a machine that has no matching certificate.
-run-nick: gen
-	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
-		-configuration Debug build $(ADHOC_SIGN)
 	@APP=$$(xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
 		-configuration Debug -showBuildSettings 2>/dev/null \
 		| awk -F' = ' '/ BUILT_PRODUCTS_DIR/ {print $$2; exit}')/Codenotch.app; \
@@ -47,7 +48,7 @@ run-nick: gen
 # Gatekeeper asks for a one-time right-click → Open the first time only.
 nick: gen
 	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
-		-configuration Release build $(ADHOC_SIGN)
+		-configuration Release $(DEV_SIGN) build
 	@APP=$$(xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
 		-configuration Release -showBuildSettings 2>/dev/null \
 		| awk -F' = ' '/ BUILT_PRODUCTS_DIR/ {print $$2; exit}')/Codenotch.app; \

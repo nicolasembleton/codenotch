@@ -63,6 +63,19 @@ struct ClaudeCredentials {
             // -128 (user cancelled) mean it is there and this app is not on its
             // access list. Those need very different advice, so record which.
             Log.usage.error("keychain read of \(service, privacy: .public) failed: OSStatus \(status) (\(Self.explain(status), privacy: .public))")
+            // A machine just woken from a long sleep answers -25320 — awake
+            // enough to run background work, not awake enough to show a
+            // dialogue even if one were needed. The credential is unaffected;
+            // asking again in a moment succeeds on its own. `.needsAuth` is
+            // the wrong answer for it: `supersedesHistory` treats a genuine
+            // sign-out as reason to erase the archived reading, and reported
+            // as "waiting for the first reading" what was really a few
+            // seconds of "not right now" — throwing away a perfectly good
+            // number for something that was never actually wrong.
+            // `.credentialExpired` already means exactly this — "still true,
+            // just old" — for a token that aged out overnight; reused here
+            // for the same shape of problem arriving a different way.
+            if Self.wasTransient(status) { throw UsageProviderError.credentialExpired }
             throw Self.wasRefused(status)
                 ? UsageProviderError.accessDenied
                 : UsageProviderError.needsAuth
@@ -103,6 +116,17 @@ struct ClaudeCredentials {
         status == errSecAuthFailed
             || status == errSecUserCanceled
             || status == errSecInteractionNotAllowed
+    }
+
+    /// A read that failed for a reason with nothing to do with the account.
+    ///
+    /// -25320, "in dark wake, no UI possible", is what a Mac answers for a
+    /// short window right after waking from sleep — the keychain will not
+    /// raise a dialogue while the display is still off, whether or not one
+    /// would be needed. Security doesn't export a named constant for it, so
+    /// the raw value is what there is to check.
+    static func wasTransient(_ status: OSStatus) -> Bool {
+        status == -25320   // errSecInDarkWake
     }
 
     static func explain(_ status: OSStatus) -> String {
