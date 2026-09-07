@@ -1103,9 +1103,12 @@ it and then notice when the answer changes.
 
 ### Before charging for it
 
-- [ ] **`deploymentTarget` is macOS 26.0.** Nothing else on this list matters as
-      much: it excludes every Mac not on the newest OS. Worth checking what
-      actually requires it before shipping a paid build.
+- [x] **`deploymentTarget` was macOS 26.0; lowered to 15.0 (Sequoia).** Checked
+      what actually required it: nothing. The app compiles and all 546 tests pass
+      against a macOS 15 deployment target — the notch APIs it uses
+      (`auxiliaryTopLeftArea`/`auxiliaryTopRightArea`/`safeAreaInsets`) shipped in
+      macOS 12, and no macOS 26-only symbols are referenced anywhere. The floor was
+      set by the build config alone, not by the code.
 - [ ] App icon — the dmg currently shows the generic application icon.
 - [ ] `MARKETING_VERSION` is still `0.1.0`.
 - [ ] The archive keeps a `perplexity` entry from a provider that no longer

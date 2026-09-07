@@ -4,7 +4,13 @@ PROJECT := Codenotch.xcodeproj
 SCHEME  := Codenotch
 DEST    := platform=macOS,arch=arm64
 
-.PHONY: gen build test run clean
+# Ad-hoc signing overrides, for a machine without the Developer ID cert. The
+# app's keychain ACL keys on the signing identity, so an ad-hoc build is asked
+# for the OAuth token again after every rebuild — but it runs, and the notch
+# works, without notarization or a paid certificate.
+ADHOC_SIGN = CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+
+.PHONY: gen build test run run-nick nick clean
 
 gen:
 	xcodegen generate
@@ -23,6 +29,31 @@ run: build
 		| awk -F' = ' '/ BUILT_PRODUCTS_DIR/ {print $$2; exit}')/Codenotch.app; \
 	pkill -x Codenotch || true; \
 	open "$$APP"
+
+# Build and launch without the Developer ID cert — ad-hoc signed, Debug config.
+# Same as `run` but with the signing overrides inlined, so the build doesn't
+# fail on a machine that has no matching certificate.
+run-nick: gen
+	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
+		-configuration Debug build $(ADHOC_SIGN)
+	@APP=$$(xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
+		-configuration Debug -showBuildSettings 2>/dev/null \
+		| awk -F' = ' '/ BUILT_PRODUCTS_DIR/ {print $$2; exit}')/Codenotch.app; \
+	pkill -x Codenotch || true; \
+	open "$$APP"
+
+# Build a Release .app ad-hoc signed and copy it to /Applications, so the
+# always-available copy stays current without the notarized release path.
+# Gatekeeper asks for a one-time right-click → Open the first time only.
+nick: gen
+	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
+		-configuration Release build $(ADHOC_SIGN)
+	@APP=$$(xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
+		-configuration Release -showBuildSettings 2>/dev/null \
+		| awk -F' = ' '/ BUILT_PRODUCTS_DIR/ {print $$2; exit}')/Codenotch.app; \
+	pkill -x Codenotch || true; \
+	cp -R "$$APP" /Applications/; \
+	open /Applications/Codenotch.app
 
 clean:
 	rm -rf build DerivedData $(PROJECT)

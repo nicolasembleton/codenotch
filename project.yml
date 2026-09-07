@@ -2,7 +2,7 @@ name: Codenotch
 options:
   bundleIdPrefix: com.vinz
   deploymentTarget:
-    macOS: "26.0"
+    macOS: "15.0"
   createIntermediateGroups: true
 
 settings:
@@ -56,7 +56,7 @@ targets:
         # and no obvious way to reach settings or quit.
         CFBundleName: Codenotch
         CFBundleDisplayName: Codenotch
-        LSMinimumSystemVersion: "26.0"
+        LSMinimumSystemVersion: "15.0"
         # Sources/Info.plist is *generated* from this block, so editing that
         # file directly is undone by the next `make gen`. Pointing both at the
         # build settings keeps one place to bump.
