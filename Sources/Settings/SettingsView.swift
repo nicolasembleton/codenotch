@@ -240,6 +240,11 @@ private struct AccountRow: View {
     let switchAccount: (String) -> Bool
     let retry: (String) -> Void
 
+    /// The API key the user is typing for Ollama, held in the row so it
+    /// survives re-renders until the user clicks Save.
+    @State private var ollamaKey = ""
+    @State private var ollamaKeySaved = false
+
     private var isConnected: Bool { preferences.isConnected(provider.id) }
 
     var body: some View {
@@ -346,7 +351,40 @@ private struct AccountRow: View {
                 }
 
             }
+            // Ollama is the one provider that takes a key here rather than
+            // borrowing one from another app — so it gets a text field.
+            if provider.id == "ollama" {
+                ollamaKeyEntry
+            }
         }
+    }
+
+    /// The API key input for Ollama. Stored in the keychain on Save, then a
+    /// refresh is triggered so the ring picks up the new credential without a
+    /// relaunch.
+    private var ollamaKeyEntry: some View {
+        HStack(spacing: 8) {
+            SecureField("Ollama API key", text: $ollamaKey)
+                .textContentType(.password)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+            Button("Save") {
+                guard !ollamaKey.isEmpty else { return }
+                OllamaCredentials.store(ollamaKey)
+                ollamaKey = ""
+                ollamaKeySaved = true
+                // Triggers a refresh: `signIn` sees the key and calls `refresh`.
+                _ = signIn(provider.id)
+            }
+            .controlSize(.small)
+            .disabled(ollamaKey.isEmpty)
+            if ollamaKeySaved {
+                Text("Saved.")
+                    .foregroundStyle(.green)
+                    .controlSize(.small)
+            }
+        }
+        .padding(.top, 2)
     }
 
     /// Where this row's "Open" button goes.

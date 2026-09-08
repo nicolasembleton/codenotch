@@ -193,7 +193,8 @@ struct NotchRootView: View {
                 sessionCount: model.activity(for: snapshot.id)?.sessions.count ?? 0,
                 sessionCap: model.sessionCap,
                 statusMessage: snapshot.statusMessage,
-                blockMessage: snapshot.block?.summary(now: model.now)
+                blockMessage: snapshot.block?.summary(now: model.now),
+                compactRowCount: snapshot.compactRowCount
             )
         return place.point(
             along: model.slack + model.ringCenter(index: index),

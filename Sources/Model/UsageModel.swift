@@ -146,6 +146,12 @@ struct ProviderSnapshot: Identifiable, Equatable {
     /// a dash rather than an authoritative-looking 0%.
     var hasReading: Bool { !windows.isEmpty }
 
+    /// How many windows are count-only (no fraction, no bar) — they render as
+    /// single-line rows and take less vertical space than full bar rows.
+    var compactRowCount: Int {
+        windows.filter { $0.usedFraction == nil && $0.used != nil }.count
+    }
+
     /// A ring can only be drawn when the provider said what the limit was.
     var ringFraction: Double? { usedFraction }
 
@@ -164,6 +170,7 @@ struct ProviderSnapshot: Identifiable, Equatable {
         case "gemini":     return "Sign in to Antigravity to read your usage"
         case "glm":        return "Set up a GLM Coding Plan key for a coding tool to read your usage"
         case "opencode":   return "Connect the Go plan in OpenCode to read your usage"
+        case "ollama":     return "Enter an Ollama API key in Settings, or export OLLAMA_API_KEY"
         default:           return "Sign in to \(displayName) to read your usage"
         }
     }

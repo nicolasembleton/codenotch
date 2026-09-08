@@ -23,6 +23,16 @@ ifeq (0,$(shell security find-identity -v -p codesigning 2>/dev/null | grep -c "
 DEV_SIGN := CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="" CODE_SIGN_STYLE=Automatic
 endif
 
+# Release needs a real identity, not ad-hoc: the app embeds Sparkle, and macOS
+# rejects a bundle whose framework and binary carry different Team IDs. The
+# maintainer signs Release with "Developer ID Application" (handled by `make
+# archive`). On a machine without that cert, fall back to the first "Apple
+# Development" identity found — enough to run locally and satisfy Gatekeeper.
+ifeq (0,$(shell security find-identity -v -p codesigning 2>/dev/null | grep -c "Developer ID Application"))
+NICK_TEAM := $(shell security find-certificate -c "Apple Development" -p 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*OU=\([A-Z0-9]*\).*/\1/p')
+NICK_SIGN := CODE_SIGN_IDENTITY="Apple Development" DEVELOPMENT_TEAM="$(NICK_TEAM)" CODE_SIGN_STYLE=Automatic CODE_SIGNING_REQUIRED=YES CODE_SIGNING_ALLOWED=YES
+endif
+
 .PHONY: gen build test run nick clean
 
 gen:
@@ -43,12 +53,14 @@ run: build
 	pkill -x Codenotch || true; \
 	open "$$APP"
 
-# Build a Release .app ad-hoc signed and copy it to /Applications, so the
-# always-available copy stays current without the notarized release path.
-# Gatekeeper asks for a one-time right-click → Open the first time only.
+# Build a Release .app signed and copy it to /Applications, so the always-
+# available copy stays current without the notarized release path. Uses
+# NICK_SIGN (Apple Development) when the Developer ID cert is absent — ad-hoc
+# would crash at launch because Sparkle's embedded framework carries a
+# different Team ID than the binary.
 nick: gen
 	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
-		-configuration Release $(DEV_SIGN) build
+		-configuration Release $(NICK_SIGN) build
 	@APP=$$(xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
 		-configuration Release -showBuildSettings 2>/dev/null \
 		| awk -F' = ' '/ BUILT_PRODUCTS_DIR/ {print $$2; exit}')/Codenotch.app; \

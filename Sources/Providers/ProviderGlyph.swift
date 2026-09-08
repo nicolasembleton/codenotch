@@ -13,6 +13,7 @@ enum ProviderGlyph: String, Codable, Equatable {
     case glm
     case grok
     case opencode
+    case ollama
 
     /// If an asset with this name is in the bundle it wins over the traced
     /// outline — drop a PDF/SVG export from Figma in and it is picked up.
@@ -38,6 +39,7 @@ enum ProviderGlyph: String, Codable, Equatable {
         case .glm:    return 0.95
         case .grok:   return 1.0
         case .opencode: return 0.95
+        case .ollama: return 0.95
         case .third:  return 1.0
         }
     }
@@ -52,6 +54,7 @@ enum ProviderGlyph: String, Codable, Equatable {
         case .glm:    return GlyphOutline.glm
         case .grok:   return GlyphOutline.grok
         case .opencode: return GlyphOutline.opencode
+        case .ollama: return GlyphOutline.ollama
         }
     }
 }

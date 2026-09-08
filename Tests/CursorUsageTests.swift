@@ -98,11 +98,80 @@ final class CursorCredentialsTests: XCTestCase {
 
     func testAMissingStoreMeansSignedOutRatherThanAnError() {
         let missing = URL(fileURLWithPath: "/tmp/definitely-not-here-\(UUID().uuidString).vscdb")
-        XCTAssertThrowsError(try CursorCredentials.load(from: missing)) { error in
+        let missingConfig = URL(fileURLWithPath: "/tmp/no-cli-\(UUID().uuidString).json")
+        XCTAssertThrowsError(
+            try CursorCredentials.load(from: missing, cliConfig: missingConfig,
+                                       cliTokenService: "no-such-service-\(UUID())")
+        ) { error in
             guard case UsageProviderError.needsAuth = error else {
                 return XCTFail("expected needsAuth, got \(error)")
             }
         }
+    }
+
+    // MARK: - CLI fallback
+
+    /// A CLI config with no keychain token present still throws `needsAuth` —
+    /// the config alone is not a session.
+    func testCLIConfigWithoutKeychainThrowsNeedsAuth() {
+        let config = writeCLIConfig(userID: 166725192, email: "nick@example.com")
+        let missingStore = URL(fileURLWithPath: "/tmp/no-editor-\(UUID().uuidString).vscdb")
+        XCTAssertThrowsError(
+            try CursorCredentials.load(from: missingStore, cliConfig: config,
+                                       cliTokenService: "no-such-service-\(UUID())")
+        ) { error in
+            guard case UsageProviderError.needsAuth = error else {
+                return XCTFail("expected needsAuth, got \(error)")
+            }
+        }
+    }
+
+    /// A missing CLI config (and no editor store) throws `needsAuth`, not a
+    /// file-not-found crash.
+    func testMissingCLIConfigThrowsNeedsAuth() {
+        let missingStore = URL(fileURLWithPath: "/tmp/no-editor-\(UUID().uuidString).vscdb")
+        let missingConfig = URL(fileURLWithPath: "/tmp/no-cli-\(UUID().uuidString).json")
+        XCTAssertThrowsError(
+            try CursorCredentials.load(from: missingStore, cliConfig: missingConfig)
+        ) { error in
+            guard case UsageProviderError.needsAuth = error else {
+                return XCTFail("expected needsAuth, got \(error)")
+            }
+        }
+    }
+
+    /// The account identity falls back to the CLI config when the editor is not
+    /// installed. The CLI caches the email but not a plan name.
+    func testAccountFallsBackToCLIConfig() {
+        let missingStore = URL(fileURLWithPath: "/tmp/no-editor-\(UUID().uuidString).vscdb")
+        let config = writeCLIConfig(userID: 166725192, email: "nick@example.com")
+        let account = CursorCredentials.account(from: missingStore, cliConfig: config)
+        XCTAssertEqual(account?.label, "nick@example.com")
+        XCTAssertNil(account?.plan)
+        XCTAssertEqual(account?.source, "Cursor")
+    }
+
+    /// A CLI config with no `authInfo` is treated as signed out, not as a crash.
+    func testAccountWithEmptyCLIConfigReturnsNil() {
+        let missingStore = URL(fileURLWithPath: "/tmp/no-editor-\(UUID().uuidString).vscdb")
+        let config = writeCLIConfig(userID: nil, email: nil)
+        XCTAssertNil(CursorCredentials.account(from: missingStore, cliConfig: config))
+    }
+
+    // MARK: - Helpers
+
+    /// Writes a `cli-config.json` with the given `authInfo` fields, or an empty
+    /// config if both are nil. Returns the URL to the temp file.
+    private func writeCLIConfig(userID: Int?, email: String?) -> URL {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("cli-config-\(UUID().uuidString).json")
+        var authInfo: [String: Any] = [:]
+        if let userID { authInfo["userId"] = userID }
+        if let email { authInfo["email"] = email }
+        let json: [String: Any] = ["authInfo": authInfo]
+        let data = try! JSONSerialization.data(withJSONObject: json)
+        try! data.write(to: url)
+        return url
     }
 }
 

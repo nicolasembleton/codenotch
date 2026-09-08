@@ -274,7 +274,8 @@ enum NotchLayout {
     static func cardHeight(windowCount: Int, sessionCount: Int = 0,
                            sessionCap: Int = defaultSessionCap,
                            statusMessage: String? = nil,
-                           blockMessage: String? = nil) -> CGFloat {
+                           blockMessage: String? = nil,
+                           compactRowCount: Int = 0) -> CGFloat {
         let header = max(glyphSize, cardTitleLineHeight)
         var height = 2 * cardPadding + header
 
@@ -285,9 +286,14 @@ enum NotchLayout {
         }
 
         if windowCount > 0 {
-            let block = 2 * cardBodyLineHeight + labelToBar + barHeight + barToUsed
+            let fullCount = windowCount - compactRowCount
+            // A full window row: label + bar + summary.
+            let fullBlock = 2 * cardBodyLineHeight + labelToBar + barHeight + barToUsed
+            // A compact (count-only) row: a single SplitRow line.
+            let compactBlock = cardBodyLineHeight
             height += headerToBlock
-                + CGFloat(windowCount) * block
+                + CGFloat(fullCount) * fullBlock
+                + CGFloat(compactRowCount) * compactBlock
                 + CGFloat(windowCount - 1) * blockSpacing
         } else {
             // The status message, at whatever height it actually wraps to.

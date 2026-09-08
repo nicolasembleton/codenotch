@@ -80,4 +80,57 @@ enum KeychainItem {
     static func modifiedAt(service: String, account: String? = nil) -> Date? {
         newest(service: service, account: account)?.modifiedAt
     }
+
+    /// Reads the data from the newest item under a service. The one call that
+    /// can trigger a keychain prompt for items owned by another app — but for
+    /// items this app created itself (`store`), no prompt is involved.
+    static func read(service: String, account: String? = nil) -> String? {
+        guard let match = newest(service: service, account: account) else { return nil }
+        var query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecValuePersistentRef: match.persistentRef,
+            kSecReturnData: true,
+            kSecMatchLimit: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data
+        else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Stores a string under a service+account, creating or updating the item.
+    /// For items this app owns, no prompt is involved on either write or read.
+    static func store(service: String, account: String, value: String) -> Bool {
+        let data = Data(value.utf8)
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account
+        ]
+        let attributes: [CFString: Any] = [
+            kSecValueData: data,
+            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock
+        ]
+        // Try to update first; if no item exists, add one.
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess { return true }
+        if updateStatus == errSecItemNotFound {
+            var addQuery = query
+            addQuery.merge(attributes) { _, new in new }
+            return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+        }
+        return false
+    }
+
+    /// Deletes the item under a service+account, if one exists.
+    @discardableResult
+    static func delete(service: String, account: String) -> Bool {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account
+        ]
+        return SecItemDelete(query as CFDictionary) == errSecSuccess
+    }
 }

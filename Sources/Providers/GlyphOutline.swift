@@ -529,4 +529,24 @@ enum GlyphOutline {
         [CGPoint(x: 0.1500, y: 0.8400), CGPoint(x: 0.7500, y: 0.8400),
          CGPoint(x: 0.7500, y: 0.9600), CGPoint(x: 0.1500, y: 0.9600)]
     ]
+
+    /// A simple alpaca silhouette — two pointed ears, a rounded body, four legs.
+    static let ollama: [[CGPoint]] = [
+        // Left ear
+        [CGPoint(x: 0.30, y: 0.00), CGPoint(x: 0.38, y: 0.18),
+         CGPoint(x: 0.26, y: 0.20)],
+        // Right ear
+        [CGPoint(x: 0.55, y: 0.00), CGPoint(x: 0.62, y: 0.18),
+         CGPoint(x: 0.67, y: 0.20)],
+        // Head + body + legs as one outline
+        [CGPoint(x: 0.20, y: 0.20), CGPoint(x: 0.80, y: 0.20),
+         CGPoint(x: 0.85, y: 0.30), CGPoint(x: 0.85, y: 0.55),
+         CGPoint(x: 0.80, y: 0.60), CGPoint(x: 0.80, y: 0.80),
+         CGPoint(x: 0.72, y: 0.80), CGPoint(x: 0.72, y: 0.65),
+         CGPoint(x: 0.55, y: 0.65), CGPoint(x: 0.55, y: 0.80),
+         CGPoint(x: 0.47, y: 0.80), CGPoint(x: 0.47, y: 0.65),
+         CGPoint(x: 0.30, y: 0.65), CGPoint(x: 0.30, y: 0.80),
+         CGPoint(x: 0.22, y: 0.80), CGPoint(x: 0.22, y: 0.60),
+         CGPoint(x: 0.17, y: 0.55), CGPoint(x: 0.17, y: 0.30)]
+    ]
 }
