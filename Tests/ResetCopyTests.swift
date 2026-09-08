@@ -42,11 +42,57 @@ final class ResetCopyTests: XCTestCase {
     func testAbsoluteTimeUsesAColon() {
         let text = ResetCopy.text(for: now.addingTimeInterval(6 * 60 * 60), now: now)
         XCTAssertTrue(text.contains(":"), "expected a colon in \(text)")
-        XCTAssertFalse(text.contains("."), "expected no full stop in \(text)")
+        let hasPeriodBetweenDigits = text.range(of: #"\d+\.\d+"#, options: .regularExpression) != nil
+        XCTAssertFalse(hasPeriodBetweenDigits, "expected no full stop between time digits in \(text)")
+    }
+
+    /// Spanish (and similar locales) format AM/PM as "a. m." / "p. m." with
+    /// periods, but the time separator itself must still be a colon.
+    func testSpanishLocaleKeepsColonTimeSeparator() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "es_ES")
+        let text = ResetCopy.text(for: now.addingTimeInterval(6 * 60 * 60), now: now, calendar: calendar)
+        XCTAssertTrue(text.contains(":"), "expected a colon in \(text)")
+        let hasPeriodBetweenDigits = text.range(of: #"\d+\.\d+"#, options: .regularExpression) != nil
+        XCTAssertFalse(hasPeriodBetweenDigits, "expected no full stop between time digits in \(text)")
     }
 
     func testPastResetsReadAsResetting() {
         XCTAssertEqual(ResetCopy.text(for: now.addingTimeInterval(-5), now: now), "Resetting…")
+    }
+
+    func testRemainingFormatAndRoundingBoundaries() {
+        let cases: [(TimeInterval, String)] = [
+            (-5, "Resetting…"), (0, "Resetting…"),
+            (1, "Resets in 1 min"),
+            (50 * 60 + 40, "Resets in 51 min"),
+            (59 * 60 + 40, "Resets in 1h 0m"),
+            (3 * 3600 + 20 * 60, "Resets in 3h 20m"),
+            (24 * 3600 - 20, "Resets in 1 Day 0h"),
+            (27 * 3600, "Resets in 1 Day 3h"),
+            (75 * 3600, "Resets in 3 Days 3h"),
+            (26 * 86400, "Resets in 26 Days 0h")
+        ]
+        for (seconds, expected) in cases {
+            XCTAssertEqual(ResetCopy.text(for: now.addingTimeInterval(seconds), now: now,
+                                          format: .remaining), expected)
+        }
+    }
+
+    @MainActor
+    func testResetTimePreferencePersistsAndFallsBackToAutomatic() throws {
+        let name = "ResetCopyTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+
+        let preferences = Preferences(defaults: defaults)
+        XCTAssertEqual(preferences.resetTimeFormat, .automatic)
+        preferences.resetTimeFormat = .remaining
+        XCTAssertEqual(Preferences(defaults: defaults).resetTimeFormat, .remaining)
+        preferences.resetTimeFormat = .automatic
+        XCTAssertEqual(Preferences(defaults: defaults).resetTimeFormat, .automatic)
+        defaults.set("unknown", forKey: "resetTimeFormat")
+        XCTAssertEqual(Preferences(defaults: defaults).resetTimeFormat, .automatic)
     }
 }
 
@@ -133,9 +179,42 @@ final class WindowSummaryTests: XCTestCase {
         XCTAssertEqual(window(1.04).summary, "104% Used · 0% left")
     }
 
+    /// Below one percent, whole percents collapse a real reading into "0%" —
+    /// the one number that looks most like nothing used. Both halves gain the
+    /// tenth so they still add up.
+    func testFractionsOfAPercentSurviveBelowOne() {
+        XCTAssertEqual(window(0.0034).summary, "0.3% Used · 99.7% left")
+        XCTAssertEqual(window(0.998).summary, "99.8% Used · 0.2% left")
+    }
+
+    /// A tenth of nothing is not zero: it says so rather than pretending.
+    func testVanishingFractionsSaySo() {
+        XCTAssertEqual(window(0.0004).summary, "<0.1% Used · >99.9% left")
+    }
+
+    /// The ring's label keeps the same honesty, one decimal under one percent
+    /// and whole percents everywhere else.
+    func testTheRingLabelCarriesTheFractionToo() {
+        XCTAssertEqual(window(0.0034).usedFraction.map { snapshot($0).headlineText }, "0.3%")
+        XCTAssertEqual(window(0.12).usedFraction.map { snapshot($0).headlineText }, "12%")
+        XCTAssertEqual(window(0.0004).usedFraction.map { snapshot($0).headlineText }, "<0.1%")
+    }
+
     /// Counts have no denominator, so they keep their own wording.
     func testCountsAreUntouched() {
         XCTAssertEqual(LimitWindow(id: "w", label: "Requests", used: 8).summary, "8 used")
         XCTAssertEqual(LimitWindow(id: "w", label: "Requests", remaining: 3).summary, "3 left")
+    }
+
+    private func snapshot(_ fraction: Double) -> ProviderSnapshot {
+        ProviderSnapshot(id: "p", displayName: "P", glyph: .third, fidelity: .official,
+                         status: .ok,
+                         windows: [LimitWindow(id: "w", label: "W", usedFraction: fraction)],
+                         headlineID: "w")
+    }
+
+    /// Only the number shortens; the wording around it does not.
+    func testALargeCountKeepsItsWording() {
+        XCTAssertEqual(LimitWindow(id: "w", label: "Tokens", used: 651_061).summary, "651k used")
     }
 }

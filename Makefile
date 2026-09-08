@@ -12,28 +12,41 @@ PROJECT := Codenotch.xcodeproj
 SCHEME  := Codenotch
 DEST    := platform=macOS,arch=arm64
 
-# Debug ad-hoc signs itself when the maintainer's Developer ID certificate
-# isn't in the keychain, which is every machine but the maintainer's — so a
-# contributor can `make build`/`make test`/`make run` with no Apple account at
-# all, per CONTRIBUTING.md. On the maintainer's own machine this is empty and
-# changes nothing: project.yml's stable identity is what keeps a keychain
-# "Always Allow" grant alive across rebuilds, and forcing ad-hoc there would
-# throw that away and bring the prompt back on every `make run`.
-ifeq (0,$(shell security find-identity -v -p codesigning 2>/dev/null | grep -c "Developer ID Application"))
+# Debug signs itself when the maintainer's Developer ID certificate isn't in
+# the keychain, which is every machine but the maintainer's — so a contributor
+# can `make build`/`make test`/`make run` with no Apple account at all, per
+# CONTRIBUTING.md. On the maintainer's own machine this is empty and changes
+# nothing: project.yml's stable identity is what keeps a keychain "Always
+# Allow" grant alive across rebuilds, and forcing another one there would throw
+# that away and bring the prompt back on every `make run`.
+#
+# `grep`, not `grep -c`: `-c` prints "0" rather than nothing when it matches
+# nothing, so `ifeq (,...)` was never true and a machine *without* the
+# certificate fell through to signing with an identity it does not have —
+# "Signing for Codenotch requires a development team", on every target.
+HAS_DEVELOPER_ID := $(shell security find-identity -v -p codesigning 2>/dev/null | grep "Developer ID Application")
+
+# A personal "Apple Development" certificate, where there is one, is preferred
+# over ad-hoc for exactly the reason the maintainer's identity is: it is
+# stable, so a keychain "Always Allow" grant survives the next rebuild, and
+# working on the credential-reading paths does not mean re-granting after every
+# build. Its team is read out of the certificate itself, since manual signing
+# will not proceed without one; with nothing parsed, ad-hoc is the fallback and
+# needs no Apple account.
+DEV_TEAM := $(shell security find-certificate -c "Apple Development" -p 2>/dev/null \
+	| openssl x509 -noout -subject 2>/dev/null \
+	| sed -n 's/.*OU *= *\([A-Z0-9]*\).*/\1/p')
+
+ifeq (,$(HAS_DEVELOPER_ID))
+ifeq (,$(DEV_TEAM))
 DEV_SIGN := CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="" CODE_SIGN_STYLE=Automatic
+else
+DEV_SIGN := CODE_SIGN_IDENTITY="Apple Development" CODE_SIGN_STYLE=Manual \
+	DEVELOPMENT_TEAM="$(DEV_TEAM)" PROVISIONING_PROFILE_SPECIFIER=""
+endif
 endif
 
-# Release needs a real identity, not ad-hoc: the app embeds Sparkle, and macOS
-# rejects a bundle whose framework and binary carry different Team IDs. The
-# maintainer signs Release with "Developer ID Application" (handled by `make
-# archive`). On a machine without that cert, fall back to the first "Apple
-# Development" identity found — enough to run locally and satisfy Gatekeeper.
-ifeq (0,$(shell security find-identity -v -p codesigning 2>/dev/null | grep -c "Developer ID Application"))
-NICK_TEAM := $(shell security find-certificate -c "Apple Development" -p 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | sed -n 's/.*OU=\([A-Z0-9]*\).*/\1/p')
-NICK_SIGN := CODE_SIGN_IDENTITY="Apple Development" DEVELOPMENT_TEAM="$(NICK_TEAM)" CODE_SIGN_STYLE=Automatic CODE_SIGNING_REQUIRED=YES CODE_SIGNING_ALLOWED=YES
-endif
-
-.PHONY: gen build test run nick clean
+.PHONY: gen build test test-ci run install clean
 
 gen:
 	xcodegen generate
@@ -46,6 +59,14 @@ test: gen
 	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
 		-configuration Debug $(DEV_SIGN) test
 
+# Continuous integration: no Developer ID identity exists on a CI runner, and
+# unit tests need none — override the manual signing with plain unsigned
+# builds rather than asking every contributor to hold a certificate.
+test-ci: gen
+	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
+		-configuration Debug test \
+		CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+
 run: build
 	@APP=$$(xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
 		-configuration Debug -showBuildSettings 2>/dev/null \
@@ -53,14 +74,17 @@ run: build
 	pkill -x Codenotch || true; \
 	open "$$APP"
 
-# Build a Release .app signed and copy it to /Applications, so the always-
-# available copy stays current without the notarized release path. Uses
-# NICK_SIGN (Apple Development) when the Developer ID cert is absent — ad-hoc
-# would crash at launch because Sparkle's embedded framework carries a
-# different Team ID than the binary.
-nick: gen
+# Build a Release .app, sign it with whatever identity is available (Developer
+# ID, Apple Development, or ad-hoc — the same auto-detection as `DEV_SIGN`),
+# and copy it to /Applications. For a contributor who wants a permanent copy
+# without the notarized release path. Gatekeeper may ask for a one-time
+# right-click → Open on the first launch when the build is not Developer ID
+# signed. The app embeds Sparkle, and macOS rejects a bundle whose framework
+# and binary carry different Team IDs, so the whole bundle is signed with one
+# identity rather than left unsigned.
+install: gen
 	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
-		-configuration Release $(NICK_SIGN) build
+		-configuration Release $(DEV_SIGN) build
 	@APP=$$(xcodebuild -project $(PROJECT) -scheme $(SCHEME) -destination '$(DEST)' \
 		-configuration Release -showBuildSettings 2>/dev/null \
 		| awk -F' = ' '/ BUILT_PRODUCTS_DIR/ {print $$2; exit}')/Codenotch.app; \
@@ -92,7 +116,7 @@ APP_NAME    := Codenotch
 NOTARY_PROFILE := UsageNotch
 DMG := $(RELEASE_DIR)/$(APP_NAME).dmg
 
-.PHONY: archive dmg notarize release verify-release
+.PHONY: archive dmg notarize release verify-release publish
 
 # Release configuration, exported with the Developer ID identity. `xcodebuild
 # archive` + `-exportArchive` rather than a plain build: it re-signs the bundle
@@ -175,6 +199,25 @@ appcast: $(DMG)
 
 release: notarize verify-release appcast
 	@echo "Notarized: $(DMG)"
+
+# The GitHub release page is where someone who has never installed the app
+# looks first; the appcast feed is only ever read by copies already running.
+# The same notarized dmg belongs in both, and until it was in both the release
+# pages carried no assets at all — leaving a full Xcode install as the only way
+# to try the app.
+#
+# Deliberately not part of `release`: every other target here is local, and
+# this one writes to the remote. Run it once `make release` has finished and
+# the tag exists.
+VERSION := $(shell awk -F'"' '/MARKETING_VERSION:/ {print $$2}' project.yml)
+TAG     ?= v$(VERSION)
+
+publish: $(DMG)
+	@test -n "$(VERSION)" || (echo "No MARKETING_VERSION in project.yml" && exit 1)
+	@# --clobber so re-running after a rebuild replaces the asset instead of
+	@# failing on the name already being taken.
+	gh release upload $(TAG) $(DMG) --clobber
+	@echo "Attached $(DMG) to $(TAG)."
 
 # What Gatekeeper on a customer's Mac will check. `spctl` accepting the app is
 # the actual proof that the download will open without a right-click.

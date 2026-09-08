@@ -22,6 +22,7 @@ struct ProviderRing: View {
     var isRefreshing: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.codenotchAccentColor) private var accentColor
     @State private var spin: Double = 0
 
     private var band: UsageBand {
@@ -43,7 +44,7 @@ struct ProviderRing: View {
                         .inset(by: NotchLayout.trackStroke / 2)
                         .trim(from: 0, to: sweep)
                         .stroke(
-                            band.color,
+                            band.color(accent: accentColor),
                             style: StrokeStyle(lineWidth: NotchLayout.progressStroke, lineCap: .round)
                         )
                         // Refreshing spins the reading itself rather than

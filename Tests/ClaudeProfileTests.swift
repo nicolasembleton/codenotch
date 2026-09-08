@@ -29,7 +29,6 @@ final class ClaudeProfileTests: XCTestCase {
         XCTAssertNil(profile.slug)
         XCTAssertEqual(profile.id, "claude")
         XCTAssertEqual(profile.displayName, "Claude")
-        XCTAssertEqual(profile.keychainService, "Claude Code-credentials")
         XCTAssertEqual(profile.sessionsDirectory.path, "/Users/vinz/.claude/sessions")
         XCTAssertEqual(profile.sourceName, "Claude Code")
         XCTAssertEqual(profile.signInCommand, "claude")
@@ -60,6 +59,26 @@ final class ClaudeProfileTests: XCTestCase {
         let slashed = ClaudeProfile(slug: "work",
                                     configDirectory: URL(fileURLWithPath: "/Users/vinz/.claude-work/"))
         XCTAssertEqual(slashed.keychainService, "Claude Code-credentials-19914660")
+    }
+
+    /// The default profile offers both service names — the suffix Claude Code
+    /// uses when `CLAUDE_CONFIG_DIR` is exported (even at the default path) and
+    /// the bare name older versions use — suffixed first so a current token
+    /// wins, bare kept so a legacy login still reads. Reading only the bare
+    /// name is what left the ring stuck on "Waiting for the first reading…".
+    func testTheDefaultProfileOffersBothTheSuffixedAndBareServices() {
+        let profile = ClaudeProfile.default(home: URL(fileURLWithPath: "/Users/vinz"))
+        // `shasum -a 256` of "/Users/vinz/.claude", first eight hex digits.
+        XCTAssertEqual(profile.keychainServices,
+                       ["Claude Code-credentials-337ba600", "Claude Code-credentials"])
+    }
+
+    /// A named profile is only ever written suffixed, so it offers exactly the
+    /// one service — no bare fallback that could shadow another account.
+    func testANamedProfileOffersOnlyItsSuffixedService() {
+        let profile = ClaudeProfile(slug: "work",
+                                    configDirectory: URL(fileURLWithPath: "/Users/vinz/.claude-work"))
+        XCTAssertEqual(profile.keychainServices, ["Claude Code-credentials-19914660"])
     }
 
     func testProviderIDsAreRecognised() {
@@ -188,10 +207,16 @@ final class ClaudeProfileTests: XCTestCase {
         let home = URL(fileURLWithPath: "/Users/vinz")
         let store = UsageStore(
             providers: [
-                ClaudeOAuthProvider(profile: .default(home: home), archive: UsageArchive(defaults: defaults)),
+                // `cli: nil` throughout: this is about two profiles being two
+                // cells, and finding the machine's own Claude Code would make
+                // it about what the developer has installed.
+                ClaudeOAuthProvider(profile: .default(home: home),
+                                    archive: UsageArchive(defaults: defaults),
+                                    cli: nil),
                 ClaudeOAuthProvider(profile: ClaudeProfile(slug: "work",
                                                            configDirectory: home.appendingPathComponent(".claude-work")),
-                                    archive: UsageArchive(defaults: defaults))
+                                    archive: UsageArchive(defaults: defaults),
+                                    cli: nil)
             ],
             archive: UsageArchive(defaults: defaults)
         )

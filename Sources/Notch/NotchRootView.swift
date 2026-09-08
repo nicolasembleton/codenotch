@@ -24,6 +24,16 @@ struct NotchRootView: View {
                                     convex: model.orbHugsCorner,
                                     arcRadius: model.orbArcRadius,
                                     arcOffset: model.orbArcOffset)
+                        // A second route to the same action the panel's own
+                        // `mouseDown` override reaches for — see
+                        // `NotchViewModel.onOpenSettings`. Both still depend
+                        // on the panel's `ignoresMouseEvents`/`hitTest` gate
+                        // to receive the click at all, so this alone would
+                        // not rescue a click that never reaches the content
+                        // view — but once it does, this fires reliably where
+                        // the AppKit-level path did not.
+                        .contentShape(Circle())
+                        .onTapGesture { model.onOpenSettings?() }
                         .position(orbCentre(place))
                         // Outward, into the black — not inward to nothing.
                         .scaleEffect(model.isExpanded ? 1 : model.orbMergeScale)
@@ -43,7 +53,8 @@ struct NotchRootView: View {
                         activity: model.activity(for: snapshot.id),
                         now: model.now,
                         direction: model.edge.tooltipDirection,
-                        sessionCap: model.sessionCap
+                        sessionCap: model.sessionCap,
+                        resetTimeFormat: model.resetTimeFormat
                     )
                         // Deliberately *no* `.id` here: the card is one object
                         // that travels and resizes between cells, which reads
@@ -62,6 +73,8 @@ struct NotchRootView: View {
             .animation(motion(NotchMotion.glide), value: model.hoveredIndex)
         }
         .animation(motion(NotchMotion.unfold), value: model.isExpanded)
+        .tint(model.accentColor.color)
+        .environment(\.codenotchAccentColor, model.accentColor.color)
     }
 
     /// Opening and closing are not mirror images. Appearing, the arc waits its

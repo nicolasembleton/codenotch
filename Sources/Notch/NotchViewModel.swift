@@ -17,6 +17,7 @@ final class NotchViewModel: ObservableObject {
     @Published var hoveredIndex: Int?
     /// Ticked on refresh so the "Resets in N min" copy stays honest.
     @Published var now: Date = Date()
+    @Published var resetTimeFormat: ResetTimeFormat = .automatic
 
     /// Whether the notch is open or folded away to its pill.
     @Published var isExpanded = false
@@ -37,9 +38,26 @@ final class NotchViewModel: ObservableObject {
     @Published var refreshing: Set<String> = []
     /// The settings handle is under the cursor.
     @Published var isHoveringSettings = false
+    /// A direct SwiftUI tap on the settings orb, independent of the panel's
+    /// own AppKit-level click routing (`NotchPanel.mouseDown` →
+    /// `NotchWindowController.handleClick`). That path relies on the panel's
+    /// `ignoresMouseEvents` toggle and a custom `hitTest` staying in exact
+    /// agreement with this model's own geometry on every click; this gives
+    /// the one action people actually get stuck without a second, ordinary
+    /// route that only needs SwiftUI's own gesture recognition to work.
+    var onOpenSettings: (() -> Void)?
     /// Which screen edge the notch is welded to. Everything geometric reads
     /// this through `placement` rather than assuming an axis.
     @Published var edge: NotchEdge = .right
+    /// A user-chosen nudge along that edge, in screen points from the centred
+    /// default — set live while ⌥-dragging the pill, and by
+    /// `NotchGeometry.panelFrame` from there. Reset to whatever was stored for
+    /// the new edge whenever `edge` changes; this type does not own that
+    /// persistence, only the live value.
+    @Published var alongOffset: CGFloat = 0
+    /// Mirrors the persisted Appearance choice so the separate notch window
+    /// redraws immediately when Settings changes it.
+    @Published var accentColor: AccentColorChoice = .system
     /// The display's own notch, when this edge has to share the bezel with one.
     ///
     /// Set by the window controller from the screen the panel is on, because

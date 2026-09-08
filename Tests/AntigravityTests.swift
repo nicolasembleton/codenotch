@@ -798,6 +798,98 @@ final class MenuBarIconTests: XCTestCase {
     }
 }
 
+/// The menu bar menu when the notch is hidden: the same readings as the
+/// tooltips, or Hide is a one-way door to numbers you can no longer see.
+@MainActor
+final class StatusMenuTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 1_788_000_000)
+
+    private func snapshot(
+        id: String = "codex", name: String = "Codex",
+        status: ProviderStatus = .ok,
+        windows: [LimitWindow] = [],
+        headlineID: String? = nil,
+        block: UsageBlock? = nil
+    ) -> ProviderSnapshot {
+        ProviderSnapshot(id: id, displayName: name, glyph: .openai,
+                         fidelity: .official, status: status,
+                         windows: windows, headlineID: headlineID, block: block)
+    }
+
+    /// One window reads as one line with the same three facts the tooltip
+    /// spreads over three lines: label, percentage, reset.
+    func testAWindowReadsAsOneLineWithLabelSummaryAndReset() {
+        let line = StatusItemController.windowLine(
+            for: LimitWindow(id: "primary", label: "5h limit", usedFraction: 0.08,
+                             resetsAt: now.addingTimeInterval(51 * 60)),
+            now: now)
+        XCTAssertTrue(line.contains("5h limit"), line)
+        XCTAssertTrue(line.contains("8% Used · 92% left"), line)
+        XCTAssertTrue(line.contains("Resets in 51 min"), line)
+    }
+
+    /// A window with no reset says so by saying nothing — never invented.
+    func testAWindowWithoutAResetOmitsIt() {
+        let line = StatusItemController.windowLine(
+            for: LimitWindow(id: "primary", label: "5h limit", usedFraction: 0.08),
+            now: now)
+        XCTAssertTrue(line.contains("5h limit"), line)
+        XCTAssertFalse(line.contains("Resets"), line)
+    }
+
+    /// The blocked line leads, because it changes what you can do next while
+    /// the percentage beside it still reads comfortable.
+    func testABlockLeadsTheDetails() {
+        let details = StatusItemController.detailLines(for: snapshot(
+            status: .ok,
+            windows: [LimitWindow(id: "primary", label: "5h limit", usedFraction: 0.16)],
+            block: UsageBlock(reason: "Paused", resetsAt: now.addingTimeInterval(90 * 60))
+        ), now: now)
+        XCTAssertEqual(details.count, 2)
+        XCTAssertTrue(details[0].hasPrefix("Paused until "), details[0])
+        XCTAssertTrue(details[1].contains("5h limit"), details[1])
+    }
+
+    /// Nothing metered reads as the tooltip's own status message, not blank.
+    func testNoWindowsReadsAsTheStatusMessage() {
+        let details = StatusItemController.detailLines(
+            for: snapshot(status: .needsAuth), now: now)
+        XCTAssertEqual(details, ["Sign in to Codex to read your usage"])
+    }
+
+    /// The header carries the headline figure and the reading's age — the same
+    /// pair the tooltip header shows.
+    func testTheMenuListsEveryProviderWithRefreshAndSettings() {
+        let controller = StatusItemController(onOpenSettings: {})
+        controller.snapshots = [snapshot(
+            status: .stale(since: now.addingTimeInterval(-(20 * 3600 + 21 * 60))),
+            windows: [LimitWindow(id: "secondary", label: "Weekly limit",
+                                   usedFraction: 0.29,
+                                   resetsAt: now.addingTimeInterval(3600))],
+            headlineID: "secondary")]
+        let menu = NSMenu()
+        controller.rebuild(menu: menu, now: now)
+        let titles = menu.items.map(\.title)
+        XCTAssertTrue(titles[0].contains("Codex — 29%"), titles[0])
+        XCTAssertTrue(titles[0].contains("20 hr 21 min ago"), titles[0])
+        XCTAssertTrue(titles[1].contains("Weekly limit"), titles[1])
+        XCTAssertTrue(titles[1].contains("29% Used · 71% left"), titles[1])
+        XCTAssertTrue(titles.contains("Refresh all"))
+        XCTAssertTrue(titles.contains("Settings…"))
+        XCTAssertTrue(titles.contains("Quit Codenotch"))
+        // The header re-reads its own provider.
+        XCTAssertEqual(menu.items[0].representedObject as? String, "codex")
+    }
+
+    /// With no readings yet the menu says so instead of showing an empty list.
+    func testAnEmptyMenuSaysItIsWaiting() {
+        let controller = StatusItemController(onOpenSettings: {})
+        let menu = NSMenu()
+        controller.rebuild(menu: menu, now: now)
+        XCTAssertTrue(menu.items[0].title.contains("Waiting for the first reading"))
+    }
+}
+
 
 
 /// Declining the keychain prompt is easy to do by reflex. Until now it was
@@ -934,8 +1026,8 @@ final class ReauthorizeTests: XCTestCase {
     }
 }
 
-/// Only two providers keep a credential in the keychain; the others read files
-/// and can never raise a prompt.
+/// Claude, Antigravity and cursor-agent keep a credential in the keychain;
+/// Codex still reads a file and can never raise a prompt.
 final class KeychainProviderTests: XCTestCase {
     private func summary(_ id: String) -> ProviderSummary {
         ProviderSummary(id: id, name: id, glyph: .claude, account: nil,
@@ -946,7 +1038,8 @@ final class KeychainProviderTests: XCTestCase {
         XCTAssertTrue(summary("claude").usesKeychain)
         XCTAssertTrue(summary("claude-work").usesKeychain, "every profile's token is a keychain item")
         XCTAssertTrue(summary("gemini").usesKeychain)
-        XCTAssertFalse(summary("cursor").usesKeychain, "Cursor reads a file, not the keychain")
+        XCTAssertTrue(summary("cursor").usesKeychain,
+                      "cursor-agent files its JWT in the keychain")
         XCTAssertFalse(summary("codex").usesKeychain, "Codex reads a file, not the keychain")
     }
 }
@@ -1032,4 +1125,113 @@ final class KeychainDuplicateTests: XCTestCase {
         ])
         XCTAssertEqual(winner?.persistentRef, Data("usable".utf8))
     }
+}
+
+/// Which source Antigravity's ring is drawn from, and in what order.
+///
+/// The language server holds the credential and the client identity already,
+/// so it needs nothing from the keychain. Asking it third — after a keychain
+/// read and a round trip to Google — meant that dismissing the keychain prompt
+/// produced an empty ring while the server that would have answered sat running
+/// on the same machine, never asked.
+final class AntigravitySourceOrderTests: XCTestCase {
+
+    override func tearDown() {
+        GoogleStub.reset()
+        super.tearDown()
+    }
+
+    /// The whole point: a language server that answers ends the fetch before
+    /// anything is asked of macOS or of Google.
+    ///
+    /// The request count is the assertion that carries it. `:loadCodeAssist` is
+    /// sent immediately after the credential is read, so zero requests means
+    /// the credential was never read either — which is not otherwise
+    /// observable, the keychain read being a static call with nothing to
+    /// substitute.
+    func testAnAnsweringBridgeEndsTheFetchBeforeTheKeychain() async throws {
+        let windows = [LimitWindow(id: "gemini-weekly", label: "Weekly", usedFraction: 0.2)]
+        let provider = AntigravityProvider(session: GoogleStub.session(),
+                                           localQuota: { windows })
+
+        let snapshot = try await provider.fetchSnapshot()
+
+        XCTAssertEqual(snapshot.windows.map(\.id), ["gemini-weekly"])
+        XCTAssertEqual(snapshot.fidelity, .official)
+        XCTAssertEqual(GoogleStub.requestCount, 0,
+                       "Google was called even though the language server answered")
+    }
+
+    /// Once the server has answered, its going away means Antigravity was
+    /// closed — keep the last reading dated rather than going back to the
+    /// keychain for a number the token cannot produce anyway.
+    func testOnceBridgedItDoesNotFallBackToTheToken() async throws {
+        let answers = Answers([[LimitWindow(id: "gemini-weekly", label: "Weekly", usedFraction: 0.2)], nil])
+        let provider = AntigravityProvider(session: GoogleStub.session(),
+                                           localQuota: { answers.next() })
+
+        _ = try await provider.fetchSnapshot()
+        GoogleStub.reset()
+
+        do {
+            _ = try await provider.fetchSnapshot()
+            XCTFail("expected credentialExpired")
+        } catch UsageProviderError.credentialExpired {
+            XCTAssertEqual(GoogleStub.requestCount, 0,
+                           "it went back to the token after the bridge had answered once")
+        } catch {
+            XCTFail("expected credentialExpired, got \(error)")
+        }
+    }
+}
+
+/// Hands out canned bridge answers in order, so one test can watch Antigravity
+/// answer and then go away.
+private final class Answers: @unchecked Sendable {
+    private let lock = NSLock()
+    private var queued: [[LimitWindow]?]
+
+    init(_ queued: [[LimitWindow]?]) { self.queued = queued }
+
+    func next() -> [LimitWindow]? {
+        lock.lock(); defer { lock.unlock() }
+        return queued.isEmpty ? nil : queued.removeFirst()
+    }
+}
+
+/// Counts what actually reached Google. Nothing should, while the language
+/// server is answering.
+private final class GoogleStub: URLProtocol {
+    private static let lock = NSLock()
+    private static var served = 0
+
+    static func reset() {
+        lock.lock(); served = 0; lock.unlock()
+    }
+
+    static var requestCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return served
+    }
+
+    static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GoogleStub.self]
+        return URLSession(configuration: configuration)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock(); Self.served += 1; Self.lock.unlock()
+        // 403 is what a personal account genuinely gets here, and it ends the
+        // fetch without another round trip.
+        let response = HTTPURLResponse(url: request.url!, statusCode: 403,
+                                       httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

@@ -21,9 +21,13 @@ enum UsageBand: Equatable {
         }
     }
 
-    var color: Color {
+    /// `accent` only ever stands in for the ample state's colour — the
+    /// warning bands stay fixed regardless of the chosen accent, since their
+    /// whole job is to interrupt whatever else is on screen and a
+    /// customisable warning colour could be tuned into invisibility.
+    func color(accent: Color = Palette.ample) -> Color {
         switch self {
-        case .ample:                 return Palette.ample
+        case .ample:                 return accent
         case .watch:                 return Palette.watch
         case .critical, .exhausted:  return Palette.critical
         }

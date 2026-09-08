@@ -5,6 +5,7 @@ import Combine
 @MainActor
 final class NotchWindowController {
     let model = NotchViewModel()
+    var displayPreference: DisplayPreference = .followActiveWindow
 
     /// The panel's content view, so a test can check what SwiftUI is and is not
     /// allowed to reach.
@@ -23,9 +24,18 @@ final class NotchWindowController {
     var onRefreshProvider: ((String) -> Void)?
     /// Open the settings window, asked for by clicking the handle.
     var onOpenSettings: (() -> Void)?
+    /// An ⌥-drag on the pill settled at a new `model.alongOffset`. The
+    /// controller only holds the live value; persisting it per edge is
+    /// Preferences' job, the same division `apply(edge:)` already keeps.
+    var onReposition: ((CGFloat) -> Void)?
 
     private var panel: NotchPanel?
     private var hostingView: NotchHostingView<NotchRootView>?
+
+    /// The display this notch belongs to. Nil follows the menu-bar screen,
+    /// which is what a single-controller setup did before the fleet existed —
+    /// so leaving it unset changes nothing.
+    var assignedScreen: NSScreen?
     private var cancellables = Set<AnyCancellable>()
     private var mouseMonitors: [Any] = []
     private var clearHoverWork: DispatchWorkItem?
@@ -40,6 +50,27 @@ final class NotchWindowController {
     /// twitchy rather than responsive.
     private let foldGrace: TimeInterval = 0.45
     private var foldWork: DispatchWorkItem?
+    /// Folds the notch again after a peek, when nothing else is holding it open.
+    private var peekWork: DispatchWorkItem?
+    /// The session a peek is currently offering, and how long the offer lasts.
+    ///
+    /// A click on the open notch normally pins it or refetches a ring; while
+    /// this is set and unexpired it jumps to the session instead. The expiry is
+    /// what keeps the two apart — without it, the *next* click on the notch,
+    /// minutes later and about something else, would still be raising a
+    /// terminal window.
+    private var pendingFocus: (pid: pid_t, until: Date)?
+    /// When the current peek's five seconds are up.
+    ///
+    /// The hover fold has to be told to leave it alone until then. Without
+    /// this the cursor poll — which runs every 0.3s and asks "is the pointer on
+    /// the notch?", to which the answer during a peek is almost always no —
+    /// scheduled a fold immediately, and the notch opened and shut inside a
+    /// second. A peek is not the pointer arriving, so the pointer leaving is
+    /// not what should end it.
+    private var peekUntil: Date?
+    /// The standing visibility choice, so a peek never overrides Hidden.
+    private var visibility: NotchVisibility = .onHover
     /// Whether we have pushed the pointing hand onto the cursor stack.
     private var isPointing = false
     /// The usable area the panel was last placed against.
@@ -86,6 +117,8 @@ final class NotchWindowController {
 
     func stop() {
         setPointing(false)
+        peekUntil = nil
+        peekWork?.cancel()
         foldWork?.cancel()
         cursorTimer?.invalidate()
         cursorTimer = nil
@@ -96,11 +129,30 @@ final class NotchWindowController {
 
     // MARK: - Placement
 
+    /// The screen this notch lives on: its assigned display while that display
+    /// is still connected, the menu-bar screen otherwise — so unplugging the
+    /// display never strands the panel on a screen that no longer exists.
+    /// Assigned first — the fleet has already picked this display for this
+    /// controller, which is the whole point of there being more than one
+    /// controller. `displayPreference` only comes into play once nothing has
+    /// been assigned, which is the single-controller case `.mainDisplay`
+    /// scope leaves it in.
+    func currentScreen() -> NSScreen? {
+        if let assigned = assignedScreen,
+           NSScreen.screens.contains(where: { $0 === assigned }) {
+            return assigned
+        }
+        return NotchGeometry.preferredScreen(from: NSScreen.screens, preference: displayPreference)
+    }
+
     func relocate(cellCount: Int? = nil) {
-        guard let screen = NotchGeometry.preferredScreen(from: NSScreen.screens) else { return }
+        guard let screen = currentScreen() else { return }
         model.adopt(screen: screen)
         let size = model.panelSize(cellCount: cellCount ?? model.snapshots.count)
-        let frame = NotchGeometry.panelFrame(for: screen, panelSize: size, edge: model.edge)
+        let frame = NotchGeometry.panelFrame(
+            for: screen, panelSize: size, edge: model.edge,
+            alongOffset: model.alongOffset, slack: model.slack
+        )
         lastVisibleFrame = screen.visibleFrame
 
         if let panel {
@@ -110,6 +162,11 @@ final class NotchWindowController {
             let hosting = NotchHostingView(rootView: NotchRootView(model: model))
             panel.contextMenuProvider = { [weak self] in self?.contextMenu() }
             panel.onClick = { [weak self] in self?.handleClick() }
+            panel.onDrag = { [weak self] dx, dy in self?.dragged(dx: dx, dy: dy) }
+            panel.onDragEnd = { [weak self] in
+                guard let self else { return }
+                self.onReposition?(self.model.alongOffset)
+            }
 
             // The hosting view goes *inside* a plain container rather than
             // being the content view itself.
@@ -142,6 +199,22 @@ final class NotchWindowController {
             Log.usage.debug("panel \(NSStringFromRect(panel.frame), privacy: .public) on screen \(NSStringFromRect(screen.frame), privacy: .public)")
         }
         updateInteractiveRects()
+    }
+
+    /// Feeds a raw pointer delta from an ⌥-drag into `model.alongOffset` and
+    /// re-places the panel at once, so the pill tracks the cursor rather than
+    /// catching up once the button lifts.
+    ///
+    /// Both deltas are used as `NSEvent` reports them, unflipped: `deltaY`
+    /// positive is the pointer moving *down* the screen, `deltaX` positive is
+    /// it moving *right*. `NotchGeometry` is written to match — it subtracts
+    /// the offset from a vertical edge's y (which AppKit grows *up*, so
+    /// subtracting more moves the pill down) and adds it to a horizontal
+    /// edge's x — so no sign flip belongs here; adding one would make the
+    /// pill run away from the cursor instead of following it.
+    private func dragged(dx: CGFloat, dy: CGFloat) {
+        model.alongOffset += model.edge.isVertical ? dy : dx
+        relocate()
     }
 
     // MARK: - Hit regions
@@ -289,7 +362,7 @@ final class NotchWindowController {
     /// Has the Dock appeared, gone away, moved or resized since we last placed
     /// the panel? Nothing notifies us, so this is asked rather than told.
     private func followUsableAreaIfItMoved() {
-        guard let screen = NotchGeometry.preferredScreen(from: NSScreen.screens) else { return }
+        guard let screen = currentScreen() else { return }
         guard screen.visibleFrame != lastVisibleFrame else { return }
         relocate()
     }
@@ -353,6 +426,9 @@ final class NotchWindowController {
             return
         }
 
+        // A peek holds the notch open for its own duration; only after that
+        // does the pointer get a say again.
+        if let peekUntil, peekUntil > Date() { return }
         guard model.isExpanded, !model.staysOpen, foldWork == nil else { return }
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
@@ -392,7 +468,40 @@ final class NotchWindowController {
     /// A click on a ring refetches that provider; a click anywhere else on the
     /// open notch pins it. The ring is the more specific target, so it wins.
     func handleClick() {
-        guard let panel, model.isExpanded else {
+        guard let panel else {
+            setExpanded(true)
+            return
+        }
+        let local = localCursor(in: panel.frame)
+
+        // The handle sits inside the notch, so it has to be tested before the
+        // cells — otherwise the cell band nearest the foot of the stack swallows
+        // it and clicking the gear refetches a provider instead.
+        if model.isExpanded, isOverHandle(local) {
+            onOpenSettings?()
+            return
+        }
+        // A peek is a question — "this one just finished, do you want it?" —
+        // and the click that follows is the answer. It outranks pinning and
+        // refetching for as long as the offer stands, and for no longer.
+        //
+        // Tested before the folded case below, not after: the grace period
+        // outlives the peek by a couple of seconds precisely so that a hand
+        // that arrived late still lands on the session, and answering it by
+        // merely re-opening the notch would waste that click.
+        if takePendingFocus() {
+            peekWork?.cancel()
+            peekWork = nil
+            peekUntil = nil
+            withAnimation(NotchMotion.unfold) {
+                model.isExpanded = false
+                model.hoveredIndex = nil
+            }
+            setPointing(false)
+            updateInteractiveRects()
+            return
+        }
+        guard model.isExpanded else {
             // Opens it, the same as the pointer arriving would — it must not
             // also pin it. The pill's hot zone is deliberately generous, since
             // it is a small target on a screen edge, so a click aimed at
@@ -402,15 +511,6 @@ final class NotchWindowController {
             // the ordinary hover behaviour, which a plain `setExpanded` leaves
             // intact.
             setExpanded(true)
-            return
-        }
-        let local = localCursor(in: panel.frame)
-
-        // The handle sits inside the notch, so it has to be tested before the
-        // cells — otherwise the cell band nearest the foot of the stack swallows
-        // it and clicking the gear refetches a provider instead.
-        if isOverHandle(local) {
-            onOpenSettings?()
             return
         }
         if notchRect.contains(local),
@@ -482,6 +582,12 @@ final class NotchWindowController {
         }
     }
 
+    func apply(displayPreference: DisplayPreference) {
+        guard self.displayPreference != displayPreference else { return }
+        self.displayPreference = displayPreference
+        relocate()
+    }
+
     /// Half the crossing, each way. Short: it is a settings change, not a
     /// flourish, and the notch should be back before you have looked up.
     private static let edgeCrossfade: TimeInterval = 0.16
@@ -490,6 +596,11 @@ final class NotchWindowController {
     private var edgeChange = 0
 
     func apply(_ visibility: NotchVisibility) {
+        self.visibility = visibility
+        // A standing choice outranks a peek that happens to be in flight.
+        peekWork?.cancel()
+        peekWork = nil
+        peekUntil = nil
         switch visibility {
         case .alwaysShow:
             panel?.orderFrontRegardless()
@@ -522,6 +633,85 @@ final class NotchWindowController {
         }
         setPointing(false)
         updateInteractiveRects()
+    }
+
+    // MARK: - Peeking
+
+    /// Open the notch by itself for a moment, because something happened.
+    ///
+    /// Distinct from `setExpanded(true)`, which is the pointer arriving: this
+    /// has no pointer to leave again, so it schedules its own close. The close
+    /// checks the same two conditions the hover fold does — pinned open, or the
+    /// pointer now resting on it — because a peek that arrives while you are
+    /// already reading the notch must not yank it shut underneath you.
+    ///
+    /// `pid` is the agent's process, used only if the peek is clicked; nil
+    /// leaves the click doing what it ordinarily does.
+    func peek(for duration: TimeInterval, focusing pid: pid_t?) {
+        // Hidden is a standing choice that the notch is not to be on screen.
+        // Something finishing is not grounds to overrule it — the chime still
+        // sounds, which is the part that works with nothing visible.
+        guard visibility != .hidden, let panel else {
+            Log.usage.debug("peek skipped: notch hidden")
+            return
+        }
+        Log.usage.debug("peek for \(duration, privacy: .public)s, pid \(pid ?? -1, privacy: .public)")
+
+        if let pid {
+            pendingFocus = (pid: pid, until: Date().addingTimeInterval(duration + Self.focusGrace))
+        }
+        peekUntil = Date().addingTimeInterval(duration)
+
+        panel.orderFrontRegardless()
+        foldWork?.cancel()
+        foldWork = nil
+        peekWork?.cancel()
+        withAnimation(NotchMotion.unfold) { model.isExpanded = true }
+        updateInteractiveRects()
+
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, let panel = self.panel else { return }
+                self.peekWork = nil
+                self.peekUntil = nil
+                guard !self.model.staysOpen else { return }
+                // Left open if the peek did its job and the pointer is already
+                // there; the ordinary hover fold takes it from here.
+                guard !self.liveRect.contains(self.localCursor(in: panel.frame)) else { return }
+                withAnimation(NotchMotion.unfold) {
+                    self.model.isExpanded = false
+                    self.model.hoveredIndex = nil
+                }
+                self.setPointing(false)
+                self.updateInteractiveRects()
+                Log.usage.debug("peek folded")
+            }
+        }
+        peekWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+    }
+
+    /// How long after a peek folds a click still counts as answering it. Covers
+    /// the reach for the mouse that started while the notch was still open.
+    private static let focusGrace: TimeInterval = 2
+
+    /// Raise the terminal the peeked session is running in, if the offer stands.
+    private func takePendingFocus() -> Bool {
+        guard let pending = pendingFocus, pending.until > Date() else {
+            pendingFocus = nil
+            return false
+        }
+        pendingFocus = nil
+        return SessionFocus.activateApp(owning: pending.pid)
+    }
+
+    /// Tear down a controller whose display is gone: hide first so no panel
+    /// lingers on a screen that no longer exists, then stop its timers and
+    /// monitors — a retired controller that kept polling would relocate
+    /// another display's panel underneath a parked pointer.
+    func retire() {
+        apply(.hidden)
+        stop()
     }
 
     /// Clicking the open notch pins it, so it stays put while you read it.

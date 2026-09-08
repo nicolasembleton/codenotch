@@ -7,7 +7,7 @@ import SwiftUI
 /// you go, not something you glance at, and a floating panel that follows the
 /// notch would be one more thing hovering over the screen edge.
 @MainActor
-final class SettingsWindowController {
+final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private let preferences: Preferences
     /// A closure, not a snapshot. Read once at launch, the account shown here
@@ -38,19 +38,74 @@ final class SettingsWindowController {
 
     /// Bring the window to the front from an accessory app.
     ///
-    /// `makeKeyAndOrderFront` plus `activate` is not enough on its own here:
-    /// an app with no dock icon is not always allowed to pull itself in front
-    /// of whatever the user is working in, and the window then opens silently
-    /// behind everything. `orderFrontRegardless` is the part that does not ask
-    /// permission, and it is why the window appears at all.
+    /// `makeKeyAndOrderFront` plus `activate` alone were not enough here: an
+    /// accessory app — anything but `AppPresence.dock` — is restricted by
+    /// macOS from properly activating and compositing its own windows, so the
+    /// window could be created, "visible" by `NSWindow`'s own bookkeeping, and
+    /// still never actually drawn on screen (its `occlusionState` missing
+    /// `.visible` is what gave this away). A `.regular` app has no such
+    /// restriction, so this promotes to one for as long as the window is
+    /// open and restores whatever `AppPresence` actually chose once it
+    /// closes — settings staying open is the one moment the Dock is allowed
+    /// to gain an icon it did not ask for.
     private func surface(_ window: NSWindow) {
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
     }
 
+    func windowWillClose(_ notification: Notification) {
+        NSApp.setActivationPolicy(preferences.appPresence.activationPolicy)
+    }
+
+    /// Sit the traffic lights in the middle of the panel's header band.
+    ///
+    /// Their default place is a title bar's worth from the top, which on a
+    /// `fullSizeContentView` window leaves them crowded into the corner of
+    /// the sidebar card rather than centred in the row the card's toggle and
+    /// the pane's title share. AppKit puts them back on some window events,
+    /// so this runs again whenever the window comes forward rather than only
+    /// at creation.
+    private func layoutTrafficLights(in window: NSWindow) {
+        let buttons = [NSWindow.ButtonType.closeButton,
+                       .miniaturizeButton,
+                       .zoomButton]
+            .compactMap { window.standardWindowButton($0) }
+        guard let container = buttons.first?.superview else { return }
+
+        for (index, button) in buttons.enumerated() {
+            var frame = button.frame
+            frame.origin.x = Self.firstLightCentreX
+                + CGFloat(index) * Self.lightSpacing - frame.width / 2
+            // Flipped: AppKit measures a window's content from the bottom.
+            frame.origin.y = container.bounds.height
+                - SettingsView.headerHeight / 2 - frame.height / 2
+            button.frame = frame
+        }
+    }
+
+    /// Centre of the close button, in from the window's left edge, and the
+    /// centre-to-centre step to the next one — both measured off the design
+    /// this panel is matching.
+    private static let firstLightCentreX: CGFloat = 26
+    private static let lightSpacing: CGFloat = 22.5
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        layoutTrafficLights(in: window)
+    }
+
     func show() {
         if let window {
+            // Re-centered every time, not only at creation: a window is
+            // positioned once and then just re-surfaced from here on, so if
+            // it ever ended up off any connected screen — a display that was
+            // reconfigured or disconnected since — every later click would
+            // silently bring forward a window that isn't anywhere visible.
+            if !NSScreen.screens.contains(where: { $0.frame.intersects(window.frame) }) {
+                window.center()
+            }
             surface(window)
             return
         }
@@ -58,13 +113,29 @@ final class SettingsWindowController {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0,
                                 width: SettingsView.width, height: SettingsView.height),
-            // No `fullSizeContentView`: it pulls content up beneath the title
-            // bar, and the form's first section header would sit behind it.
-            styleMask: [.titled, .closable],
+            // `fullSizeContentView` runs the sidebar flush up under the traffic
+            // lights, with no separate title strip above it. This reserved a
+            // tall blank band once before, but that band was
+            // `NavigationSplitView`'s own toolbar — the sidebar is a plain
+            // `HStack` now, so there is no toolbar left to reserve for.
+            styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        // Kept for the Window menu and Mission Control; hidden from the bar
+        // itself, where the sidebar already names what you are looking at.
         window.title = "Codenotch Settings"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        // A floating rounded panel rather than a square window. The rounded
+        // shape is drawn by the content (see `SettingsView.body`), so the
+        // window has to stop painting its own square one behind it — hence
+        // the clear background, which also lets the corners cut through
+        // instead of showing black wedges outside the curve.
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.delegate = self
         window.contentView = NSHostingView(
             rootView: SettingsView(preferences: preferences,
                                    providers: providers,
@@ -77,6 +148,7 @@ final class SettingsWindowController {
         window.center()
         window.isReleasedWhenClosed = false
         self.window = window
+        layoutTrafficLights(in: window)
         surface(window)
     }
 }

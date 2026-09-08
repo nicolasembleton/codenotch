@@ -1,32 +1,52 @@
+<div align="center">
+
 # Codenotch
 
-A macOS app that pins a small black notch to a screen edge, showing how much of
-each coding assistant's usage limit you have burned — and whether it is still
-working, done, or waiting on you.
+[![CI](https://github.com/vinzdg/codenotch/actions/workflows/ci.yml/badge.svg)](https://github.com/vinzdg/codenotch/actions/workflows/ci.yml)
+![Platform](https://img.shields.io/badge/platform-macOS%2026%2B-black)
+![Swift](https://img.shields.io/badge/swift-5-orange)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+**A macOS app that pins a small black notch to a screen edge, showing how much
+of each coding assistant's usage limit you have burned — and whether it is
+still working, done, or waiting on you.**
 
 ![Collapsed notch with hover tooltip](docs/design/frame-124-hover-tooltip.png)
+
+</div>
 
 Hover a ring for its limit windows and when they reset. Claude's ring shows the
 same **current session** window Claude Code's own `/usage` leads with, so the
 two never disagree.
 
+## Windows
+
+A Windows port — Rust/Tauri 2, same design and providers — lives in [`windows/`](windows/README.md).
+
 ## What it reads
 
 | Provider | Source | How |
 |---|---|---|
-| **Claude Code** | official | The OAuth token in the login keychain, against the same endpoint Claude Code's own `/usage` uses. |
-| **Cursor** | official | The editor's own signed-in session, read from its local SQLite state — no separate sign-in. |
+| **Claude Code** | official | Claude Code's own `/usage`, asked of the installed `claude`. Falls back to the OAuth token in the login keychain, against the endpoint that command uses, when Claude Code isn't installed. |
+| **Cursor** | official | The editor's signed-in session in its local SQLite state, or the `cursor-agent` login in the keychain — no separate sign-in. |
 | **Codex** | official | ChatGPT's usage endpoint, using the local Codex sign-in. Shows the 5-hour and weekly limits when available. |
 | **Antigravity** | official where licensed, otherwise a request count | Antigravity's local language server first, then Google's quota endpoint; a plain count when neither will answer for the account. |
 | **GLM** | official | Z.ai's Coding Plan monitor endpoint, with a key borrowed from whichever coding tool already holds one — Claude Code's `settings.json`, ZCode, or OpenCode. |
 | **Grok** | official | The Grok CLI session in `~/.grok/auth.json`, against the same credits billing endpoint `/usage` uses. |
 | **OpenCode** | official | The Go plan's official usage endpoint, with the `opencode-go` key OpenCode itself stores on sign-in. |
+| **GitHub Copilot** | official | GitHub's Copilot quota endpoint, authenticated with the GitHub CLI session already on the Mac (`gh auth login`). |
 
 Codenotch never signs in anywhere. Every reading is borrowed from a credential
 or session a tool on your Mac already holds — install and sign in to any of
 them, and its ring appears. Switching a provider off in Settings stops its
 credential being read at all and forgets the readings taken from it; it does
 not sign you out of the tool that owns the account, and the row says so.
+
+Settings lists the connected providers in the order the notch draws them, and
+you can drag one by its handle to move it. The order is remembered across
+launches. A provider you switch back on joins the end of that list rather than
+reclaiming an older position, so nothing you cannot currently see jumps ahead
+of something you placed deliberately.
 
 It also answers **"is it still working?"** — a thin arc spins inside a
 provider's ring while a session is busy, and becomes a pulsing amber ring when
@@ -40,6 +60,46 @@ Any `~/.claude-<slug>` directory Claude Code has run against is found at launch;
 the default `~/.claude` always comes first, the rest in alphabetical order, so the
 rings never swap places.
 
+## When a session ends
+
+The notch opens itself for five seconds when an agent stops working, or stops
+to ask you something, and sounds the system alert. Clicking it while it is open
+brings that session's application to the front.
+
+The app, not the tab. A session publishes its pid and nothing else — no window,
+no tab, no tty — so the app is found by walking up the process tree from the
+agent to whatever launched it. Choosing the *tab* inside that app needs the
+terminal's own scripting interface, and there is no general one: Terminal.app
+and iTerm2 can match a tab by tty, Warp and Ghostty publish no scripting
+dictionary at all. So the app is raised for everybody and the tooltip names the
+session, which leaves the last hop one keystroke rather than working for two
+terminals and silently doing nothing in a third.
+
+Both halves switch off separately in Settings, because they fail differently:
+the peek is no use behind a full-screen window, and the sound is no use in a
+meeting. Each of the two events — finished, and waiting on you — picks its own
+sound there, with a preview button beside it.
+
+The sound is played as a file on the ordinary output rather than handed to
+`NSSound` as a system alert. A system alert goes through the interface
+sound-effects channel, which System Settings → Sound can switch off — and on a
+Mac where it is off, `NSSound.play()` reports success and nothing is heard.
+
+Only *leaving* busy counts. A question being answered is not a piece of work
+ending, and a session whose file disappears mid-turn — which is what quitting
+Claude Code looks like — is not announced at all, since there is no window left
+to jump to. Nothing is announced from the first reading either: every session
+already running at launch arrives with no history, and treating that as a
+transition would ring once per open window on every start.
+
+## Alerts
+
+A provider's headline limit crossing **80%** — and reaching **100%** —
+becomes a system notification: once per crossing, never repeated while it
+stays crossed, and again only after the window has genuinely rolled over.
+Each provider can be muted from its own row in Settings, and macOS permission
+is asked on the first real alert rather than at launch.
+
 ## Placement
 
 The notch lives on any of the four screen edges. Right and left keep a
@@ -52,6 +112,14 @@ parked underneath it.
 At rest it is a small pill on the screen edge that unfolds when the pointer
 reaches it — configurable in Settings to always show, or to hide entirely.
 Settings live in an orb below the notch: an arc at rest, a gear on hover.
+
+In Settings → Appearance → Reset time, choose **Time remaining** for countdowns
+like "Resets in 3 Days 3h". **Reset date** keeps the reset date and time, with
+minutes shown when less than an hour remains.
+
+Appearance also carries the ring's accent colour. The device accent is the
+default; fixed presets are available for pink, red, orange, yellow, green,
+teal, blue, indigo, purple and off-white.
 
 The app itself can show a Dock icon, a menu bar icon, or neither.
 
@@ -74,7 +142,8 @@ No signing identity is required for either. `make release` — which archives,
 notarizes, and produces a signed auto-update feed — needs a Developer ID
 certificate and an App Store Connect notary profile, and is only ever run by
 the maintainer to cut an official release. See
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](CONTRIBUTING.md). CI runs the same unit tests unsigned via
+`make test-ci`.
 
 Run with `CODENOTCH_DEMO=1` to see fixed sample data instead of live readings.
 
@@ -105,12 +174,16 @@ those can change without notice. Every adapter's response shape is pinned by
 tests, and every failure degrades to a visible status (`stale`, `needsAuth`,
 `error`) rather than an invented number.
 
-**Keychain:** the app is signed with a stable Developer ID identity so the
-one-time "Always Allow" grant on Claude Code's and Antigravity's keychain
-items survives rebuilds. The secret itself is read only when the owning app
-has actually changed it — checked via the item's modification date, which
-isn't behind the same access prompt as the credential — so a valid grant does
-not mean a prompt on every poll.
+**Keychain:** Claude's readings do not use it where Claude Code is installed.
+Claude Code files a *new* keychain item on every token rotation, and the new
+item's access list does not carry this app, so an "Always Allow" granted
+against the old one stops working about an hour later — asking `claude` itself
+avoids the question entirely. Where the keychain is still the source (no
+Claude Code on the machine, or Antigravity), the app is signed with a stable
+Developer ID identity so a grant survives rebuilds, and the secret is read
+only when the owning app has actually changed it — checked via the item's
+modification date, which isn't behind the same access prompt as the
+credential — so a valid grant does not mean a prompt on every poll.
 
 **Rate limits:** Claude's endpoint returns 429 if polled too hard, with an
 unhelpful `Retry-After: 0`. The back-off treats that as a floor-raiser only —
@@ -132,4 +205,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © 2026 Vinz

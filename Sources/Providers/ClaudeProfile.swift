@@ -117,17 +117,64 @@ struct ClaudeProfile: Equatable, Hashable {
     /// Where Claude Code writes one file per running process.
     var sessionsDirectory: URL { configDirectory.appendingPathComponent("sessions") }
 
-    /// The keychain service the OAuth token is filed under.
+    /// Claude Code's own settings file, which carries the signed-in address.
     ///
-    /// The default directory uses the bare name. Any other `CLAUDE_CONFIG_DIR`
-    /// gets a suffix so two profiles cannot overwrite each other's token: the
-    /// first eight hex digits of the SHA-256 of the directory's absolute path,
-    /// no trailing slash. That is Claude Code's rule, not ours — it is what
-    /// makes `Claude Code-credentials-1c731050` findable at all.
-    var keychainService: String {
-        guard slug != nil else { return Self.defaultKeychainService }
-        return "\(Self.defaultKeychainService)-\(Self.keychainSuffix(forPath: configDirectory.path))"
+    /// The default profile keeps it *beside* the directory, at `~/.claude.json`;
+    /// a profile reached through `CLAUDE_CONFIG_DIR` keeps it *inside* its own
+    /// directory. Reading the wrong one shows the personal account against the
+    /// work ring, so the distinction matters more than it looks.
+    var accountFileURL: URL {
+        slug == nil
+            ? configDirectory.deletingLastPathComponent().appendingPathComponent(".claude.json")
+            : configDirectory.appendingPathComponent(".claude.json")
     }
+
+    /// Who is signed in, read from that file.
+    ///
+    /// Worth having because the keychain token does not carry an address, so
+    /// until now the settings row could not say *which* account a ring was for
+    /// — the one question two Claude rings actually raise. It is also readable
+    /// without a keychain prompt, which is the whole point of asking here.
+    func signedInAddress() -> String? {
+        struct Config: Decodable {
+            struct Account: Decodable { let emailAddress: String? }
+            let oauthAccount: Account?
+        }
+        guard let data = try? Data(contentsOf: accountFileURL),
+              let config = try? JSONDecoder().decode(Config.self, from: data),
+              let address = config.oauthAccount?.emailAddress,
+              !address.isEmpty
+        else { return nil }
+        return address
+    }
+
+    /// Every keychain service a profile's token might be filed under, in the
+    /// order to prefer them — newest wins across the lot at read time.
+    ///
+    /// A profile's token is filed under the bare name plus a suffix: the first
+    /// eight hex digits of the SHA-256 of the directory's absolute path, no
+    /// trailing slash. That is Claude Code's rule, not ours. The subtlety is
+    /// *when* Claude Code applies it to the default directory: it suffixes
+    /// whenever `CLAUDE_CONFIG_DIR` is set in the shell it runs from, and a
+    /// shell that exports the variable exports it even when it points at the
+    /// default `~/.claude` — so the default profile's live token can sit under
+    /// `Claude Code-credentials-<hash of ~/.claude>` rather than the bare name.
+    /// Older Claude Code, and an unset variable, keep the bare name for the
+    /// default. Reading only the bare name therefore finds a stale, months-old
+    /// duplicate on such a machine and the ring waits for a first reading that
+    /// never comes, while a current token sits one service name away.
+    ///
+    /// So the default profile offers both, suffixed first; a named profile is
+    /// only ever written suffixed. `KeychainItem.newest(services:)` picks the
+    /// most recently written item across them.
+    var keychainServices: [String] {
+        let suffixed = "\(Self.defaultKeychainService)-\(Self.keychainSuffix(forPath: configDirectory.path))"
+        return slug == nil ? [suffixed, Self.defaultKeychainService] : [suffixed]
+    }
+
+    /// The primary service — the first candidate. Retained for callers and
+    /// tests that name a single service.
+    var keychainService: String { keychainServices.first! }
 
     static let defaultKeychainService = "Claude Code-credentials"
 
